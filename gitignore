@@ -1,0 +1,32 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# SQLite database files
+*.db
+*.sqlite
+
+# Logs
+*.log
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Virtual environments
+.env
+.venv
+venv/
+ENV/
+*.conda
+*.virtualenv
+
+# Cache & build files
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Jupyter Notebook checkpoints (if you add notebooks later)
+.ipynb_checkpoints
