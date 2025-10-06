@@ -4,7 +4,7 @@ import logging
 from collections import deque
 
 logging.basicConfig(
-    filename="/Users/masoomeshafiee/Projects/data_organization/db_export.log", # <-- change this
+    filename="/Users/masoomeshafiee/Projects/data_organization/data-management-system-SQLite/data/db_export.log", # <-- change this
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
@@ -739,11 +739,454 @@ def find_missing_values(db_path, requested_columns, missing_columns, main_table=
 
     else:
         raise ValueError("mode must be 'any' or 'none'")
+# 3. find logical duplicates for experiments (Same organism, protein, user, condition, date, replicate, capture_setting — but potentially different comments, experiment_path)
+def find_duplicate_experiments(db_path, filters=None):
+    """
+    Find experiments that share the same key metadata but differ in comment or other fields.
+    """
+    where_clauses, params, joins = build_query_context("Experiment", filters)
+    query = f"""
+    SELECT 
+        Organism.name AS organism,
+        Protein.name AS protein,
+        Condition.name AS condition,
+        Experiment.date,
+        Experiment.replicate,
+        CaptureSetting.capture_type,
+        User.name AS user,
+        COUNT(*) AS duplicate_count,
+        GROUP_CONCAT(Experiment.id) AS experiment_ids
+    FROM Experiment
+    JOIN Organism ON Experiment.organism_id = Organism.id
+    JOIN Protein ON Experiment.protein_id = Protein.id
+    JOIN Condition ON Experiment.condition_id = Condition.id
+    JOIN CaptureSetting ON Experiment.capture_setting_id = CaptureSetting.id
+    JOIN User ON Experiment.user_id = User.id
+    {' '.join(joins)}
+    """
 
-    
-    
+    if where_clauses:
+        query += " WHERE " + " AND ".join(where_clauses)
+
+    query += """
+    GROUP BY Organism.name, Protein.name, Condition.name, Experiment.date, Experiment.replicate, CaptureSetting.capture_type, User.name
+    HAVING COUNT(*) > 1
+    ORDER BY duplicate_count DESC
+    """
+    return execute_query(db_path, query, params)
+
+# 4. find the duplicates in the tables with the desired columns
+
+def find_near_duplicates_by_columns(
+    db_path,
+    table,
+    key_column="id",
+    include_columns=None,     # columns that definse "same"
+    exclude_columns=None,     # or: all columns except these (and key)
+    filters=None,
+    show_columns=None         # extra descriptive columns (aliases or raw)
+):
+    """
+    Find duplicate rows in `table` based on a chosen set of columns.
+    - include_columns: list of COLUMN_MAP aliases or raw table columns to group by
+    - exclude_columns: alternative: use all columns except these (and key)
+    - show_columns: extra descriptive columns (aliases or raw) to show across dupes
+    """
+    filters = filters or {}
+
+    # --- Expand available columns in the table
+    with sqlite3.connect(db_path) as conn:
+        table_cols = expand_columns(conn, table)
+
+    if key_column not in table_cols:
+        raise ValueError(f"Primary key column {key_column} not found in table {table}.")
+
+    def resolve_col(col):
+        """Resolve alias via COLUMN_MAP or assume raw column of this table."""
+        if col in COLUMN_MAP:
+            return COLUMN_MAP[col], col
+        else:
+            return f"{table}.{col}", col
+
+    # --- Decide group-by columns
+    if include_columns is not None:
+        resolved = [resolve_col(c) for c in include_columns]
+    else:
+        excl = set(exclude_columns or [])
+        resolved = [(f"{table}.{c}", c) for c in table_cols if c != key_column and c not in excl]
+
+    sql_group_cols, group_labels = zip(*resolved) if resolved else ([], [])
+    if not sql_group_cols:
+        raise ValueError("No columns left to group by.")
+
+    # --- Extra descriptive columns to show
+    sql_show_cols, show_labels = [], []
+    if show_columns:
+        for c in show_columns:
+            sql_col, label = resolve_col(c)
+            sql_show_cols.append(sql_col)
+            show_labels.append(label)
+
+    # --- Build joins (always include all required tables for selected cols)
+    required_tables = {table}
+    for sql_col in list(sql_group_cols) + sql_show_cols:
+        required_tables.add(sql_col.split('.')[0])
+    for k in filters.keys():
+        required_tables.add(COLUMN_MAP[k].split('.')[0])
+
+    where_clauses, params, joins = build_query_context(
+        main_table=table,
+        filters=filters,
+        required_tables_extra=required_tables
+    )
+
+    # --- Normalized expressions for GROUP BY
+    def norm(expr): return f"LOWER(TRIM({expr}))"
+    group_by_exprs = [norm(c) for c in sql_group_cols]
+    group_by_sql = ", ".join(group_by_exprs)
+
+    # --- SELECT list
+    group_samples = [f"MIN({c}) AS {label}" for c, label in zip(sql_group_cols, group_labels)]
+    shown_values = [f"GROUP_CONCAT(DISTINCT {c}) AS {label}_values"
+                    for c, label in zip(sql_show_cols, show_labels)]
+
+    select_list = ", ".join(
+        group_samples
+        + shown_values
+        + [f"COUNT(*) AS duplicate_rows",
+           f"GROUP_CONCAT({table}.{key_column}) AS ids"]
+    )
+
+    # --- Final query
+    query = f"SELECT {select_list} FROM {table} {' '.join(joins)}"
+    if where_clauses:
+        query += " WHERE " + " AND ".join(where_clauses)
+    query += f" GROUP BY {group_by_sql} HAVING COUNT(*) > 1 ORDER BY duplicate_rows DESC"
+
+    print(query)  # for debugging
+    return execute_query(db_path, query, params)
+
+# 5. count unique combinations of the desired columns in the desired table
+def count_unique_combinations(db_path, columns, table="Experiment", filters=None):
+    filters = filters or {}
+
+    sql_columns = []
+    requested_tables = {table}
+
+    for col in columns:
+        if col not in COLUMN_MAP:
+            raise ValueError(f"Unknown column: {col}")
+        sql_col = COLUMN_MAP[col]
+        sql_columns.append(sql_col)
+        # extract table name for join inference
+        requested_tables.add(sql_col.split(".")[0])
+
+    # ALSO add tables referenced in filters
+    for key in filters.keys():
+        if key not in COLUMN_MAP:
+            raise ValueError(f"Unknown filter key: {key}")
+        col = COLUMN_MAP[key]
+        requested_tables.add(col.split(".")[0])
+
+    where_clause, params, joins = build_query_context(main_table=table, filters=filters, required_tables_extra=requested_tables)
+    base_query = f"SELECT {', '.join(sql_columns)}, COUNT(*) AS count FROM {table} " + " ".join(joins)
+    if where_clause:
+        base_query += " WHERE " + " AND ".join(where_clause)
+    group_by_clause = ", ".join(sql_columns)
+    base_query += f" GROUP BY {group_by_clause} ORDER BY count DESC"
+    return execute_query(db_path, base_query + ";", params)
+
+# 6. Experiments missing all file types (already implemented). --> use find_experiments_missing_files with all file types.
+
+# 7. coutn experiments with/without multiple file types, grouped by chosen entity
+def count_experiments_with_files(db_path, group_by="user_name", file_types=("raw", "tracking", "mask", "analysis_file", "analysis_result"), filters=None, limit=50):
+    """
+    Summarize experiments with/without multiple file types, grouped by chosen entity.
+
+    group_by: alias from COLUMN_MAP (e.g. "user_name", "organism", "protein")
+              or raw "Table.col" string.
+    file_types: list/tuple of file types among {"raw", "tracking", "mask", "analysis"}.
+    """
+    filters = filters or {}
+
+    # Resolve group_by to SQL column
+    if group_by in COLUMN_MAP:
+        group_col = COLUMN_MAP[group_by]
+    elif "." in group_by:  # raw column string
+        group_col = group_by
+    else:
+        raise ValueError(f"Unsupported group_by: {group_by}")
+
+    # --- Base joins (needed for filters)
+    where_clauses, params, joins = build_query_context(
+        main_table="Experiment",
+        filters=filters
+    )
+
+    # --- File-type joins and file_id columns
+    file_joins = []
+    file_checks = {}
+    if "raw" in file_types:
+        file_joins.append("LEFT JOIN RawFiles ON RawFiles.experiment_id = Experiment.id")
+        file_checks["raw"] = "RawFiles.id"
+    if "tracking" in file_types:
+        file_joins.append("LEFT JOIN TrackingFiles ON TrackingFiles.experiment_id = Experiment.id")
+        file_checks["tracking"] = "TrackingFiles.id"
+    if "mask" in file_types:
+        file_joins.append("LEFT JOIN Masks ON Masks.experiment_id = Experiment.id")
+        file_checks["mask"] = "Masks.id"
+    if "analysis_file" in file_types:
+        file_joins.append(
+            "LEFT JOIN ExperimentAnalysisFiles ON ExperimentAnalysisFiles.experiment_id = Experiment.id "
+            "LEFT JOIN AnalysisFiles ON AnalysisFiles.id = ExperimentAnalysisFiles.analysis_file_id"
+        )
+        file_checks["analysis_file"] = "AnalysisFiles.id"
+    if "analysis_result" in file_types:
+        file_joins.append(
+        "LEFT JOIN AnalysisResultExperiments "
+        "ON AnalysisResultExperiments.experiment_id = Experiment.id "
+        "LEFT JOIN AnalysisResults "
+        "ON AnalysisResults.id = AnalysisResultExperiments.analysis_result_id"
+        )
+        file_checks["analysis_result"] = "AnalysisResults.id"
+
+
+    # --- SELECT list
+    select_parts = [
+        f"{group_col} AS group_value",
+        "COUNT(DISTINCT Experiment.id) AS total_experiments",
+    ]
+    for ftype, col in file_checks.items():
+        select_parts.append(f"COUNT(DISTINCT CASE WHEN {col} IS NOT NULL THEN Experiment.id END) AS with_{ftype}")
+        select_parts.append(f"COUNT(DISTINCT CASE WHEN Experiment.id IS NOT NULL AND {col} IS NULL THEN Experiment.id END) AS without_{ftype}")
+
+    select_clause = ",\n       ".join(select_parts)
+
+    # --- Build query
+    if group_col.split(".")[0] not in {"Experiment"}:
+        joins.insert(0,f"RIGHT JOIN {group_col.split('.')[0]} ON Experiment.{group_col.split('.')[0].lower()}_id = {group_col.split('.')[0]}.id")
+    query = f"""
+    SELECT {select_clause}
+    FROM Experiment
+    {' '.join(joins)}
+    {' '.join(file_joins)}
+    """
+    if where_clauses:
+        query += " WHERE " + " AND ".join(where_clauses)
+
+    query += f" GROUP BY {group_col} ORDER BY total_experiments DESC"
+    if limit:
+        query += f" LIMIT {limit}"
+
+    return execute_query(db_path, query, params)
+
+# --------- Orphaned data detection --------
+
+# 9. forign key integrity checks 
+def find_invalid_foreign_keys(db_path, child_table, fk_column, parent_table, parent_key="id", filters=None, limit=50):
+    """
+    Find rows in child_table where fk_column references a non-existent row in parent_table.
+    Example: find_invalid_foreign_keys(DB_PATH, "Experiment", "capture_setting_id", "CaptureSetting")
+    """
+    filters = filters or {}
+    requested_tables = set()
+    for key in filters.keys():
+        if key not in COLUMN_MAP:
+            raise ValueError(f"Unknown filter key: {key}")
+        col = COLUMN_MAP[key]
+        requested_tables.add(col.split(".")[0])
+    where_clauses, params, joins = build_query_context(child_table, filters, required_tables_extra=requested_tables, base_tables={child_table, parent_table})
+
+    query = f"""
+    SELECT {child_table}.id AS {child_table}_id, {child_table}.{fk_column}
+    FROM {child_table}
+    LEFT JOIN {parent_table} ON {child_table}.{fk_column} = {parent_table}.{parent_key}
+    {' '.join(joins) if joins else ''}
+    WHERE {child_table}.{fk_column} IS NOT NULL
+      AND {parent_table}.{parent_key} IS NULL
+    {' AND ' + ' AND '.join(where_clauses) if where_clauses else ''}
+    ORDER BY {child_table}.id ASC
+    LIMIT {limit}
+    """
+    return execute_query(db_path, query,params)
+
+# 10. find Orphan records (parent never referenced by any child)
+def find_orphan_parents(db_path, parent_table, child_table, fk_column, parent_key="id", filters= None, limit=50):
+    """
+    Find rows in parent_table that are never referenced by child_table.fk_column.
+    Example: find_orphan_parents(DB_PATH, "CaptureSetting", "Experiment", "capture_setting_id")
+    """
+    filters = filters or {}
+    requested_tables = set()
+    for key in filters.keys():
+        if key not in COLUMN_MAP:
+            raise ValueError(f"Unknown filter key: {key}")
+        col = COLUMN_MAP[key]
+        requested_tables.add(col.split(".")[0])
+    where_clauses, params, joins = build_query_context(parent_table, filters, required_tables_extra=requested_tables, base_tables={parent_table, child_table})
+
+
+    query = f"""
+    SELECT {parent_table}.{parent_key} AS {parent_table}_id, {parent_table}.*
+    FROM {parent_table}
+    LEFT JOIN {child_table} ON {child_table}.{fk_column} = {parent_table}.{parent_key}
+    {' '.join(joins) if joins else ''}
+    WHERE {child_table}.{fk_column} IS NULL
+    {' AND ' + ' AND '.join(where_clauses) if where_clauses else ''}
+    ORDER BY {parent_table}.{parent_key} ASC
+    LIMIT {limit}
+    """
+    return execute_query(db_path, query, params)
+
+# 11. Categorial  data validation (e.g. check if values in a column belong to a predefined set)
+def find_invalid_categorical_values(
+    db_path,
+    table,
+    column,
+    allowed_values,
+    filters=None,
+    limit=50,
+    summarize=False
+):
+    """
+    Find rows in `table` where `column` contains a value not in allowed_values.
+    - summarize=True → return counts of unique invalid values
+    """
+    filters = filters or {}
+    requested_tables = {table}
+    for key in filters.keys():
+        if key not in COLUMN_MAP:
+            raise ValueError(f"Unknown filter key: {key}")
+        col = COLUMN_MAP[key]
+        requested_tables.add(col.split(".")[0])
+
+    where_clauses, params, joins = build_query_context(
+        main_table=table,
+        filters=filters,
+        required_tables_extra=requested_tables,
+        base_tables={table}
+    )
+
+    allowed_list = ", ".join(f"'{v}'" for v in allowed_values)
+
+    # --- Base WHERE condition
+    invalid_condition = (
+        f"{table}.{column} NOT IN ({allowed_list}) "
+        f"AND {table}.{column} IS NOT NULL "
+        f"AND TRIM({table}.{column}) <> ''"
+    )
+
+    if summarize:
+        # Just count invalid values
+        query = f"""
+        SELECT {table}.{column} AS invalid_value,
+               COUNT(*) AS count
+        FROM {table}
+        {' '.join(joins) if joins else ''}
+        WHERE {invalid_condition}
+        {' AND ' + ' AND '.join(where_clauses) if where_clauses else ''}
+        GROUP BY {table}.{column}
+        ORDER BY count DESC
+        """
+    else:
+        # Show offending rows
+        query = f"""
+        SELECT {table}.id, {table}.{column}
+        FROM {table}
+        {' '.join(joins) if joins else ''}
+        WHERE {invalid_condition}
+        {' AND ' + ' AND '.join(where_clauses) if where_clauses else ''}
+        ORDER BY {table}.id ASC
+        """
+        if limit:
+            query += f" LIMIT {limit}"
+
+    return execute_query(db_path, query, params)
+
+# 11. find_incomplete_linked_entities
+def find_incomplete_linked_entities_generalized(
+    db_path,
+    base_table="Experiment",
+    present_entity=("RawFiles", "experiment_id"),   # (child_table, FK to base_table)
+    missing_entity=("TrackingFiles", "experiment_id"),
+    present_bridge=None,  # (bridge_table, present_fk, present_target_fk) if many-to-many
+    missing_bridge=None,  # (bridge_table, missing_fk, missing_target_fk) if many-to-many
+    filters=None,
+    limit=50,
+):
+    """
+    Find records in `base_table` that have one related entity (present_entity)
+    but are missing another (missing_entity).
+
+    Supports both direct one-to-many and many-to-many via bridge tables.
+
+    Examples:
+      - Experiments that have RawFiles but no TrackingFiles:
+          present_entity=("RawFiles", "experiment_id"), missing_entity=("TrackingFiles", "experiment_id")
+
+      - Experiments that have AnalysisFiles but no AnalysisResults:
+          present_bridge=("ExperimentAnalysisFiles", "experiment_id", "analysis_file_id"),
+          present_entity=("AnalysisFiles", "id"),
+          missing_bridge=("AnalysisResultExperiments", "experiment_id", "analysis_result_id"),
+          missing_entity=("AnalysisResults", "id")
+    """
+    filters = filters or {}
+
+    # Resolve entities
+    present_table, present_fk = present_entity
+    missing_table, missing_fk = missing_entity
+
+    # Build base filters and joins
+    where_clauses, params, joins = build_query_context(
+        main_table=base_table,
+        filters=filters,
+        base_tables={base_table, present_table, missing_table},
+    )
+
+    # --- Join logic (direct vs via bridge)
+    if present_bridge:
+        pb_table, pb_fk, pb_target = present_bridge
+        present_join = f"""
+            INNER JOIN {pb_table} ON {pb_table}.{pb_fk} = {base_table}.id
+            INNER JOIN {present_table} ON {present_table}.{present_fk} = {pb_table}.{pb_target}
+        """
+    else:
+        present_join = f"INNER JOIN {present_table} ON {present_table}.{present_fk} = {base_table}.id"
+
+    if missing_bridge:
+        mb_table, mb_fk, mb_target = missing_bridge
+        missing_join = f"""
+            LEFT JOIN {mb_table} ON {mb_table}.{mb_fk} = {base_table}.id
+            LEFT JOIN {missing_table} ON {missing_table}.{missing_fk} = {mb_table}.{mb_target}
+        """
+        missing_null_cond = f"{missing_table}.{missing_fk} IS NULL"
+    else:
+        missing_join = f"LEFT JOIN {missing_table} ON {missing_table}.{missing_fk} = {base_table}.id"
+        missing_null_cond = f"{missing_table}.{missing_fk} IS NULL"
+
+    # --- Build query
+    query = f"""
+    SELECT DISTINCT {base_table}.id AS {base_table}_id,
+           {base_table}.date,
+           {base_table}.replicate,
+           {base_table}.is_valid
+    FROM {base_table}
+    {present_join}
+    {missing_join}
+    {' '.join(joins) if joins else ''}
+    WHERE {missing_null_cond}
+    {' AND ' + ' AND '.join(where_clauses) if where_clauses else ''}
+    ORDER BY {base_table}.id ASC
+    LIMIT {limit}
+    """
+
+    print(query)
+    return execute_query(db_path, query, params)
+
+
+
 if __name__ == "__main__":
-    DB_PATH = "/Users/masoomeshafiee/Projects/data_organization/Reyes_lab_data.db" # <-- change this
+    DB_PATH = "/Users/masoomeshafiee/Projects/data_organization/data-management-system-SQLite/db/Reyes_lab_data.db" # <-- change this
 
     #print(get_experiment_metadata(DB_PATH, 1))
     #print(list_experiments_by_protein(DB_PATH, "Rfa1", 2))
@@ -761,13 +1204,30 @@ if __name__ == "__main__":
     #result = count_experiments_trend(DB_PATH, group_by=["capture_type"], filters={"is_valid":"Y"})
     #result = list_recent_experiments(DB_PATH, days=580, filters={"condition": "cpt"}, limit=50)
     #result = count_entity_by_another(DB_PATH, "*", ["analysis_file_type"], filters=None)
+    #result = count_entity_by_another(DB_PATH, "experiment_id", ["user_name"])  
     #result = find_experiments_missing_files(DB_PATH, file_types = ["raw", "tracking", "mask", "analysis"], filters={"is_valid":"Y"}, limit=50)
 
-    result = find_missing_values(DB_PATH, ["user_name"],["email"], main_table= "User", mode = "any", limit=50)
+    #result = find_missing_values(DB_PATH, ["user_name"],["email"], main_table= "User", mode = "any", limit=50)
+
+    #result = find_duplicate_experiments(DB_PATH, filters=None)
+    #result = find_duplicates_by_columns(DB_PATH, table="Condition", key_column="id", include_columns=["name"], filters=None)
+    #result = find_near_duplicates_by_columns(DB_PATH,table="Experiment", include_columns= ["organism", "protein", "condition"],show_columns=["user_name", "date"], filters=None)
+    #result = count_unique_combinations(DB_PATH, columns=["capture_type", "protein"], table="CaptureSetting", filters=None)
+
+    #result = count_experiments_with_files(DB_PATH, group_by="user_name", file_types=("raw", "tracking", "mask", "analysis_result"), limit=50)
+    #result = find_invalid_foreign_keys(DB_PATH, child_table="RawFiles", fk_column="experiment_id", parent_table="Experiment", filters={"raw_file_type": "w1bf"},limit=10000)
+    #result = find_orphan_parents(DB_PATH, parent_table="Experiment", child_table="Masks", fk_column="experiment_id", filters={"is_valid": "Y"}, limit=50)
+    #result = find_invalid_categorical_values(DB_PATH, table="Masks", column="mask_type", allowed_values=["cell", "nucleus", "Nucleus-G1"], filters=None, limit=500)
+
+    #result = find_incomplete_linked_entities_generalized(DB_PATH, base_table="Experiment", present_entity=("RawFiles", "experiment_id"), missing_entity=("TrackingFiles", "experiment_id"),filters={"is_valid": "Y"}, limit=50)
+    result = find_incomplete_linked_entities_generalized(DB_PATH, base_table="Experiment", present_bridge=("AnalysisResultExperiments", "experiment_id", "analysis_result_id"), present_entity=("AnalysisResults", "id"), missing_bridge=("ExperimentAnalysisFiles", "experiment_id","analysis_file_id" ), missing_entity=("AnalysisFiles", "id"), filters={"is_valid": "Y"}, limit=50)
+
+
+
     # save to CSV
     if result is not None:
         print(result)
-        result.to_csv("/Users/masoomeshafiee/Projects/data_organization/experiment_query_result.csv", index=False)
+        result.to_csv("/Users/masoomeshafiee/Projects/data_organization/data-management-system-SQLite/data/experiment_query_result.csv", index=False)
         print("Query results saved to experiment_query_result.csv")
     else:
         print("No results found or an error occurred.")
