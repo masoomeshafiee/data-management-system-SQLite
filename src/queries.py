@@ -3,11 +3,26 @@ import pandas as pd
 import logging
 from collections import deque
 
+
+# ---------------------------------------------------------------------
+# Module logger for queries
+# ---------------------------------------------------------------------
+logger = logging.getLogger("queries")
+if not logger.handlers:
+    handler = logging.FileHandler("../data/db_export.log")
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    handler.setLevel(logging.DEBUG)      # ensures all messages pass
+    logger.propagate = False # stay isolated from the root logger
+'''
 logging.basicConfig(
-    filename="/Users/masoomeshafiee/Projects/data_organization/data-management-system-SQLite/data/db_export.log", # <-- change this
+    filename="../data/db_export2.log",
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
+'''
 
 BASE_EXPERIMENT_QUERY = """
     SELECT Experiment.id, Organism.name as organism, Protein.name as protein, StrainOrCellLine.name as strain, Condition.name as condition, Condition.concentration_value, Condition.concentration_unit,
@@ -305,10 +320,13 @@ def execute_query(db_path, query, params=None):
             result_df = pd.read_sql_query(query, conn, params=params)
         else:
             result_df = pd.read_sql_query(query, conn)
-        
+        print("i was here")
         return result_df
     except sqlite3.Error as e:
-        logging.error(f"Database error: {e}")
+        logger.error(f"Database error: {e}", exc_info=True)
+        print("Database error:", e)  # --- IGNORE ---
+        for h in logger.handlers:
+            h.flush()  # ← force flush so it writes before return
         return None
     finally:
         if conn:
@@ -822,10 +840,16 @@ def find_near_duplicates_by_columns(
     # --- Extra descriptive columns to show
     sql_show_cols, show_labels = [], []
     if show_columns:
-        for c in show_columns:
-            sql_col, label = resolve_col(c)
-            sql_show_cols.append(sql_col)
-            show_labels.append(label)
+        if show_columns == ["*"]:
+            for c in table_cols:
+                if c != key_column and c not in sql_group_cols:
+                    sql_show_cols.append(f"{table}.{c}")
+                    show_labels.append(c)
+        else:
+            for c in show_columns:
+                sql_col, label = resolve_col(c)
+                sql_show_cols.append(sql_col)
+                show_labels.append(label)
 
     # --- Build joins (always include all required tables for selected cols)
     required_tables = {table}
@@ -847,7 +871,7 @@ def find_near_duplicates_by_columns(
 
     # --- SELECT list
     group_samples = [f"MIN({c}) AS {label}" for c, label in zip(sql_group_cols, group_labels)]
-    shown_values = [f"GROUP_CONCAT(DISTINCT {c}) AS {label}_values"
+    shown_values = [f"GROUP_CONCAT(DISTINCT {c}) AS {label}"
                     for c, label in zip(sql_show_cols, show_labels)]
 
     select_list = ", ".join(
@@ -983,7 +1007,7 @@ def count_experiments_with_files(db_path, group_by="user_name", file_types=("raw
 # --------- Orphaned data detection --------
 
 # 9. forign key integrity checks 
-def find_invalid_foreign_keys(db_path, child_table, fk_column, parent_table, parent_key="id", filters=None, limit=50):
+def find_invalid_foreign_keys(db_path, child_table, fk_column, parent_table, parent_key="id", filters=None, limit=1000):
     """
     Find rows in child_table where fk_column references a non-existent row in parent_table.
     Example: find_invalid_foreign_keys(DB_PATH, "Experiment", "capture_setting_id", "CaptureSetting")
