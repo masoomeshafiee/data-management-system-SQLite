@@ -1,6 +1,7 @@
 import sqlite3
-
-conn = sqlite3.connect('Reyes_lab_data.db')
+DB_PATH = "/Users/masoomeshafiee/Projects/data_organization/data-management-system-SQLite/db/Reyes_lab_data.db"
+conn = sqlite3.connect(DB_PATH)
+conn.execute("PRAGMA foreign_keys = ON;")
 c = conn.cursor()
 #c.executescript("""ALTER TABLE Experiment
 #    ADD COLUMN is_valid TEXT;""")
@@ -362,7 +363,49 @@ c.executescript("""DROP TABLE IF EXISTS TrackingFiles;
     UNIQUE (experiment_id, file_name, field_of_view, file_type, threshold, linking_distance, gap_closing_distance, max_frame_gap),
     FOREIGN KEY (experiment_id) REFERENCES Experiment(id));""")
 '''
-c.executescript(""" DELETE FROM Experiment WHERE id=53; DELETE FROM Experiment WHERE id=54; DELETE FROM Experiment WHERE id=55; DELETE FROM Experiment WHERE id=56; DELETE FROM CaptureSetting WHERE id=6; DELETE FROM CaptureSetting WHERE id=7; DELETE FROM Condition WHERE id=6; DELETE FROM Condition WHERE id=7;""")
+# c.executescript(""" DELETE FROM Experiment WHERE id=53; DELETE FROM Experiment WHERE id=54; DELETE FROM Experiment WHERE id=55; DELETE FROM Experiment WHERE id=56; DELETE FROM CaptureSetting WHERE id=6; DELETE FROM CaptureSetting WHERE id=7; DELETE FROM Condition WHERE id=6; DELETE FROM Condition WHERE id=7;""")
+
+#------------------------------------------------------------
+#-- Dimension / FK target tables: identities used in lookups
+#------------------------------------------------------------
+
+#-- Organism: identified by name
+c.executescript("""CREATE UNIQUE INDEX IF NOT EXISTS uq_Organism_identity
+ON Organism(name); -- Protein: identified by name
+CREATE UNIQUE INDEX IF NOT EXISTS uq_Protein_identity ON Protein(name);
+-- Strain or cell line: identified by name
+CREATE UNIQUE INDEX IF NOT EXISTS uq_StrainOrCellLine_identity
+ON StrainOrCellLine(name);
+-- User: identified by email (safer than name)
+CREATE UNIQUE INDEX IF NOT EXISTS uq_User_identity
+ON User(email);
+-- Condition: typical identity (name, concentration_value, concentration_unit)
+CREATE UNIQUE INDEX IF NOT EXISTS uq_Condition_identity
+ON Condition(name, concentration_value, concentration_unit);
+-- CaptureSetting: identity used in your updates
+CREATE UNIQUE INDEX IF NOT EXISTS uq_CaptureSetting_identity
+ON CaptureSetting(capture_type, exposure_time, time_interval, dye_concentration_value);
+""")
+#------------------------------------------------------------
+#-- Main row identity (so you can match Experiments by naturals)
+#------------------------------------------------------------
+
+#-- If you want Experiments to be uniquely identified by naturals:
+#-- date + replicate + all dependent FKs
+'''
+c.executescript("""CREATE UNIQUE INDEX IF NOT EXISTS uq_Experiment_identity
+ON Experiment(
+  date,
+  replicate,
+  user_id,
+  capture_setting_id,
+  condition_id,
+  protein_id,
+  organism_id,
+  strain_id
+);""")
+'''
+
 conn.commit()
 conn.close()
 print("Database schema updated successfully.")
