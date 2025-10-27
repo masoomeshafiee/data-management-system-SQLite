@@ -15,7 +15,7 @@ if not logger.handlers:
     logger.addHandler(handler)
     logger.setLevel(logging.DEBUG)
     handler.setLevel(logging.DEBUG)      # ensures all messages pass
-    logger.propagate = False # stay isolated from the root logger
+    logger.propagate = False# stay isolated from the root logger
 '''
 logging.basicConfig(
     filename="../data/db_export2.log",
@@ -1231,7 +1231,7 @@ if __name__ == "__main__":
     #result = count_entity_by_another(DB_PATH, "experiment_id", ["user_name"])  
     #result = find_experiments_missing_files(DB_PATH, file_types = ["raw", "tracking", "mask", "analysis"], filters={"is_valid":"Y"}, limit=50)
 
-    #result = find_missing_values(DB_PATH, ["user_name"],["email"], main_table= "User", mode = "any", limit=50)
+    result = find_missing_values(DB_PATH, ["user_name"],["email"], main_table= "User", mode = "any", limit=50)
 
     #result = find_duplicate_experiments(DB_PATH, filters=None)
     #result = find_duplicates_by_columns(DB_PATH, table="Condition", key_column="id", include_columns=["name"], filters=None)
@@ -1244,7 +1244,7 @@ if __name__ == "__main__":
     #result = find_invalid_categorical_values(DB_PATH, table="Masks", column="mask_type", allowed_values=["cell", "nucleus", "Nucleus-G1"], filters=None, limit=500)
 
     #result = find_incomplete_linked_entities_generalized(DB_PATH, base_table="Experiment", present_entity=("RawFiles", "experiment_id"), missing_entity=("TrackingFiles", "experiment_id"),filters={"is_valid": "Y"}, limit=50)
-    result = find_incomplete_linked_entities_generalized(DB_PATH, base_table="Experiment", present_bridge=("AnalysisResultExperiments", "experiment_id", "analysis_result_id"), present_entity=("AnalysisResults", "id"), missing_bridge=("ExperimentAnalysisFiles", "experiment_id","analysis_file_id" ), missing_entity=("AnalysisFiles", "id"), filters={"is_valid": "Y"}, limit=50)
+    #result = find_incomplete_linked_entities_generalized(DB_PATH, base_table="Experiment", present_bridge=("AnalysisResultExperiments", "experiment_id", "analysis_result_id"), present_entity=("AnalysisResults", "id"), missing_bridge=("ExperimentAnalysisFiles", "experiment_id","analysis_file_id" ), missing_entity=("AnalysisFiles", "id"), filters={"is_valid": "Y"}, limit=50)
 
 
 
