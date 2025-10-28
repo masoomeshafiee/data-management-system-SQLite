@@ -370,6 +370,7 @@ c.executescript("""DROP TABLE IF EXISTS TrackingFiles;
 #------------------------------------------------------------
 
 #-- Organism: identified by name
+'''
 c.executescript("""CREATE UNIQUE INDEX IF NOT EXISTS uq_Organism_identity
 ON Organism(name); -- Protein: identified by name
 CREATE UNIQUE INDEX IF NOT EXISTS uq_Protein_identity ON Protein(name);
@@ -386,6 +387,7 @@ ON Condition(name, concentration_value, concentration_unit);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_CaptureSetting_identity
 ON CaptureSetting(capture_type, exposure_time, time_interval, dye_concentration_value);
 """)
+'''
 #------------------------------------------------------------
 #-- Main row identity (so you can match Experiments by naturals)
 #------------------------------------------------------------
@@ -405,7 +407,14 @@ ON Experiment(
   strain_id
 );""")
 '''
-
+#------------------------------------------------------------
+#-- Rename 'name' columns to more specific names
+#------------------------------------------------------------
+c.executescript("""ALTER TABLE Condition RENAME COLUMN name TO condition_name;
+                ALTER TABLE Organism RENAME COLUMN name TO organism_name;
+                ALTER TABLE Protein RENAME COLUMN name TO protein_name;
+                ALTER TABLE StrainOrCellLine RENAME COLUMN name TO strain_name;
+                ALTER TABLE User RENAME COLUMN name TO user_name;""")
 conn.commit()
 conn.close()
 print("Database schema updated successfully.")
