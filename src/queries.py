@@ -37,11 +37,11 @@ BASE_EXPERIMENT_QUERY = """
 """
 
 COLUMN_MAP = {
-    "organism": "Organism.name",
-    "protein": "Protein.name",
-    "strain": "StrainOrCellLine.name",
-    "condition": "Condition.name",
-    "user_name": "User.name",
+    "organism": "Organism.organism_name",
+    "protein": "Protein.protein_name",
+    "strain": "StrainOrCellLine.strain_name",
+    "condition": "Condition.condition_name",
+    "user_name": "User.user_name",
     "concentration_value": "Condition.concentration_value",
     "concentration_unit": "Condition.concentration_unit",
     "capture_setting_id": "CaptureSetting.id",
