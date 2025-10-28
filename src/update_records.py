@@ -1,6 +1,7 @@
 """
 Centralized module for updating records in the database.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -11,8 +12,10 @@ from typing import Dict, List, Tuple, Optional, Set, Any, Mapping
 import logging
 from queries import COLUMN_MAP, build_query_context, find_invalid_categorical_values, TABLE_RELATIONSHIPS
 import os
+import re
 import time
-
+import math
+print("pandas imported:", "pd" in globals())
 IDENTITY_MAP = { # not used (optional)
     # Core biological entities
     "Organism": ["name"],
@@ -100,6 +103,14 @@ MUTABLE_EXTRAS = {
     # Add others if ever needed...
 }
 
+# ----------------------------------------------------------------------
+#                     Categorical values
+# ----------------------------------------------------------------------
+ALLOWED_CATEGORICALS: Dict[str, Set[str]] = {"is_valid": {"Y", "N"}, "organism_name": {"E.coli", "yeast", "Human cells"}, "capture_type":{"fast", "long", "confocal"},
+"dye_concentration_unit":{"uM", "nM", "pM", "n/a"}, # number with % sign, e.g. "20%"
+"condition_name":{"cpt", "uv", "hu", "untreated"},
+"concentration_unit":{"mM", "uM", "nM", "pM", "j/m2", "n/a"}
+}  # etc.
 
 # ----------------------- Logging setup -----------------------
 logger = logging.getLogger("update_records")
@@ -1166,6 +1177,7 @@ def execute_update(
       - Applies the UPDATE (unless dry_run)
     Returns: (out_dir, n_changed, n_targeted)
     """
+    import pandas as pd
     if not update_dict:
         raise ValueError("update_dict is empty; nothing to update")
     
@@ -1843,7 +1855,170 @@ def update_all_records(
             dry_run=dry_run,
         )
 
+# -----------------------------------------------------------------
+#                 Update codes with invalid categorical values
+#------------------------------------------------------------------
 
+def update_invalid_categorical_values(
+    db_path: str,
+    table: str,
+    *,
+    column: str,
+    allowed_values: set[str],
+    default_for_unknown: str = "unknown",
+    case_insensitive: bool = True,
+    filters: dict | None = None,
+    key_column: str = "id",
+    dry_run: bool = True,
+    output_dir: str = "../data/update_previews",
+    chunk_size: int = 400
+):
+    """
+    Normalize a TEXT categorical column to a canonical set of allowed literals.
+
+    Rules:
+      1) If current value is exactly in `allowed_values` -> keep as is.
+      2) Else if LOWER(TRIM(current)) matches LOWER(TRIM(any allowed)) -> set to that canonical allowed literal.
+      3) Else -> set to `default_for_unknown` (e.g., "unknown").
+
+    Behavior:
+      - Writes ONE preview CSV containing ALL table columns + 'new_value' and 'change_<column>' ("old -> new").
+      - On dry_run=True: no DB changes, only the CSV.
+      - On dry_run=False: applies only truly changed rows (grouped by target value for simplicity/efficiency).
+
+    Returns:
+      (out_dir: str | Path, n_changed: int, n_targeted: int)
+    """
+    import sqlite3
+    import pandas as pd
+    from datetime import datetime
+    from pathlib import Path
+
+    filters = filters or {}
+
+    # -- Build canonical normalization function & map of normalized allowed -> canonical literal
+    def _norm(s: str | None) -> str | None:
+        if s is None:
+            return None
+        s2 = s.strip()
+        return s2.lower() if case_insensitive else s2
+
+    # Map normalized allowed -> canonical spelling from allowed_values
+    allowed_norm_to_canonical: dict[str, str] = {}
+    for lit in allowed_values:
+        n = _norm(lit)
+        if n is not None and n != "":
+            allowed_norm_to_canonical[n] = lit  # prefer provided canonical spelling
+
+    with sqlite3.connect(db_path) as conn:
+        # Validate columns exist
+        cur = conn.cursor()
+        cur.execute(f"PRAGMA table_info({table});")
+        cols = {r[1] for r in cur.fetchall()}
+        if column not in cols:
+            raise ValueError(f"Column '{column}' not found in table '{table}'. Columns={sorted(cols)}")
+        if key_column not in cols:
+            raise ValueError(f"Key column '{key_column}' not found in table '{table}'.")
+
+        # Build query (JOIN-aware) for candidate rows: non-NULL & non-empty in target column
+        col_ref = f"{table}.{column}"
+        base_where = [f"{col_ref} IS NOT NULL", f"LENGTH(TRIM({col_ref})) > 0"]
+
+        where, params, joins = build_query_context(
+            main_table=table,
+            filters=filters,
+            base_tables={table},
+            extra_where=base_where
+        )
+
+        # Select ALL columns for preview context
+        q = f"SELECT {table}.* FROM {table} " + (" ".join(joins) if joins else "")
+        if where:
+            q += " WHERE " + " AND ".join(where)
+
+        df = pd.read_sql_query(q, conn, params=params)
+
+        # Prepare output folder
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = Path(output_dir) / f"updates_{table}_{ts}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        if df.empty:
+            # Nothing to review
+            preview_path = out_dir / f"{table}_categorical_preview.csv"
+            # Write empty with headers at least
+            empty_cols = list(cols) + ["new_value", f"change_{column}"]
+            pd.DataFrame(columns=empty_cols).to_csv(preview_path, index=False)
+            return str(out_dir), 0, 0
+
+        # Compute new values
+        def compute_new(old_val: str | None) -> str:
+            if old_val is None or str(old_val).strip() == "":
+                return default_for_unknown
+            s = str(old_val)
+            # Rule 1: exact literal in allowed -> keep as-is
+            if s in allowed_values:
+                return s
+            # Rule 2: normalized match -> canonical allowed literal
+            n = _norm(s)
+            if n in allowed_norm_to_canonical:
+                return allowed_norm_to_canonical[n]
+            # Rule 3: fallback
+            return default_for_unknown
+
+        df["__old__"] = df[column]
+        df["new_value"] = df["__old__"].apply(compute_new)
+
+        # Determine which rows actually change (string compare; treat None vs "None" carefully)
+        def _different(a, b) -> bool:
+            if a is None and b is None:
+                return False
+            return str(a) != str(b)
+
+        df[f"change_{column}"] = df.apply(
+            lambda r: f"{r['__old__']} -> {r['new_value']}" if _different(r["__old__"], r["new_value"]) else None,
+            axis=1
+        )
+
+        # Only changed rows are targets
+        changed_mask = df[f"change_{column}"].notna()
+        changed_df = df.loc[changed_mask].copy()
+        n_changed = len(changed_df)
+        n_targeted = len(df)  # rows examined under current filters
+
+        # Always write ONE preview CSV with full table + new_value + change_<column>
+        preview_cols = list(df.columns)  # already includes all table columns plus helper columns
+        # Remove internal __old__ from the CSV (we have change_ and new_value already)
+        preview_cols = [c for c in preview_cols if c != "__old__"]
+        # Ensure new_value and change_<column> are at the end
+        base_cols = [c for c in df.columns if c not in ("__old__", "new_value", f"change_{column}")]
+        ordered_cols = base_cols + ["new_value", f"change_{column}"]
+        df[ordered_cols].to_csv(out_dir / f"{table}_categorical_preview.csv", index=False)
+
+        if dry_run or n_changed == 0:
+            return str(out_dir), n_changed, n_targeted
+
+        # --- Apply updates for changed rows only, grouped by target value ---
+        # Build groups: new_value -> list of ids
+        if key_column not in df.columns:
+            raise ValueError(f"Primary key column '{key_column}' not present in selected columns.")
+
+        groups: dict[str, list[int]] = {}
+        for _, row in changed_df.iterrows():
+            rid = int(row[key_column])
+            nv = row["new_value"]
+            groups.setdefault(nv, []).append(rid)
+
+        # Execute per group to keep SQL simple
+        for new_val, ids in groups.items():
+            for i in range(0, len(ids), chunk_size):
+                chunk = ids[i:i+chunk_size]
+                placeholders = ", ".join(["?"] * len(chunk))
+                sql = f"UPDATE {table} SET {column} = ? WHERE {key_column} IN ({placeholders})"
+                conn.execute(sql, [new_val] + chunk)
+        conn.commit()
+
+        return str(out_dir), n_changed, n_targeted
 
 
 if __name__ == "__main__":
@@ -1873,5 +2048,8 @@ if __name__ == "__main__":
     #mutable_extras=MUTABLE_EXTRAS, filters={"condition":"untreated"}, dry_run=True) # Note: if the filter itself is orphan, it cant find the records to update. ex: if the filter is condition:" " --> Since it does not exist in the condition table, the filter query returns no record to even check the orphand for capture setting table. 
     
     
-    out_dir, n_changed, n_targeted = update_all_records(DB_PATH,main_table="Experiment",update_dict={"condition":"cpt", 'concentration_value':"69", "concentration_unit":"um"},dry_run=True)
+    #out_dir, n_changed, n_targeted = update_all_records(DB_PATH,main_table="Experiment",update_dict={"condition":"cpt", 'concentration_value':"69", "concentration_unit":"um"},dry_run=True)
+
+    out_dir, n_changed, n_targeted = update_invalid_categorical_values(DB_PATH, "CaptureSetting",column="dye_concentration_unit",allowed_values=ALLOWED_CATEGORICALS["dye_concentration_unit"],default_for_unknown="unknown",dry_run=True)
+
     print(out_dir, n_changed, n_targeted)
