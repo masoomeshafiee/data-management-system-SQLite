@@ -15,16 +15,16 @@ import os
 import re
 import time
 import math
-print("pandas imported:", "pd" in globals())
+
 IDENTITY_MAP = { # not used (optional)
     # Core biological entities
-    "Organism": ["name"],
-    "Protein": ["name"],
-    "StrainOrCellLine": ["name"],
+    "Organism": ["organism_name"],
+    "Protein": ["protein_name"],
+    "StrainOrCellLine": ["strain_name"],
 
     # Experimental metadata
-    "Condition": ["name", "concentration_value", "concentration_unit"],
-    "User": ["name"],
+    "Condition": ["condition_name", "concentration_value", "concentration_unit"],
+    "User": ["user_name"],
 
     # Capture settings — uniquely defined by imaging parameters
     "CaptureSetting": [
@@ -67,7 +67,7 @@ MAIN_MINIMAL_KEYS = { # not used (optional)
 # CSV/update-dict aliases for identity columns (left = target table, right = mapping: identity_col -> alt key in update_dict)
 IDENTITY_ALIASES = {
     "Condition": {
-        "name": "condition",
+        "condition_name": "condition",
         "concentration_value": "concentration_value",
         "concentration_unit": "concentration_unit",
     },
@@ -78,12 +78,11 @@ IDENTITY_ALIASES = {
         "dye_concentration_value": "dye_concentration_value",
     },
     "User": {
-        "email": "email",
-        "name": "user_name",
+        "user_name": "user_name",
     },
-    "Organism": {"name": "organism"},
-    "Protein": {"name": "protein"},
-    "StrainOrCellLine": {"name": "strain"},
+    "Organism": {"organism_name": "organism"},
+    "Protein": {"protein_name": "protein"},
+    "StrainOrCellLine": {"strain_name": "strain"},
 }
 
 # Which extra columns are safe to update in existing FK rows
@@ -93,7 +92,7 @@ MUTABLE_EXTRAS = {
         "fluorescent_dye",
         "laser_wavelength",
         "laser_intensity",
-        "cammera_binning",
+        "camera_binning",
         "objective_magnification",
         "pixel_size"
     ],
@@ -188,7 +187,9 @@ def resolve_or_create_fk(
     allow_extra_attrs: bool = True,         # include extras on INSERT
     existing_policy: str = "keep",          # "keep" | "update" | "error"
     mutable_extras: Dict[str, List[str]] | None = None,  # whitelisted cols per table when updating
-) -> Optional[int]:
+    dry_run=True,                # if True, don't actually modify DB
+    dry_run_id_seed=-1000001    # optional - synthetic ID for dry-run inserts must be negative value
+):
     """
     - If identity exists:
         keep:   return id, ignore extras
@@ -196,6 +197,10 @@ def resolve_or_create_fk(
         error:  raise if provided extras differ from stored values
     - If identity missing:
         INSERT identity (+ extras if allow_extra_attrs)
+    Returns:
+        - int (real id) when FK exists or was created
+        - None when identity is incomplete and on_missing_identity != "error"
+        - (synthetic_id, payload) when dry_run=True and FK would be created
     """
     if target_table not in identity_map:
         raise ValueError(f"No identity defined for table '{target_table}'.")
@@ -221,7 +226,9 @@ def resolve_or_create_fk(
         for c in row.index:
             if c in valid_cols and c not in payload and pd.notna(row[c]):
                 payload[c] = row[c]
-
+    # ------------------------------------------------------------------
+    # CASE 1: identity already exists
+    # ----------------------------------------------------------------
     if existing:
         # Existing row found
         row_dict = dict(zip(colnames, existing))
@@ -249,24 +256,38 @@ def resolve_or_create_fk(
                 if k not in ident_cols and k in allowed and k in row_dict and row_dict[k] != v
             }
             if to_update:
-                # named placeholders for both SET and WHERE
-                set_clause = ", ".join(f"{k} = :set_{k}" for k in to_update)
-                where_named = " AND ".join(f"{c} = :id_{c}" for c in ident_cols)
+                if dry_run:
+                    logger.info(
+                        f"[DRY-RUN][FK UPDATE] {target_table} id={row_dict['id']} would update: {list(to_update.keys())}"
+                    )
+                    # don't actually update
+                else:
+                    # named placeholders for both SET and WHERE
+                    set_clause = ", ".join(f"{k} = :set_{k}" for k in to_update)
+                    where_named = " AND ".join(f"{c} = :id_{c}" for c in ident_cols)
 
-                params = {}
-                params.update({f"set_{k}": v for k, v in to_update.items()})
-                params.update({f"id_{c}": identity_values[c] for c in ident_cols})
+                    params = {}
+                    params.update({f"set_{k}": v for k, v in to_update.items()})
+                    params.update({f"id_{c}": identity_values[c] for c in ident_cols})
 
-                sql = f"UPDATE {target_table} SET {set_clause} WHERE {where_named}"
-                conn.execute(sql, params)  # <-- dict for named params
+                    sql = f"UPDATE {target_table} SET {set_clause} WHERE {where_named}"
+                    conn.execute(sql, params)  # <-- dict for named params
 
-                logger.info(f"[FK UPDATE] {target_table} id={row_dict['id']} updated: {list(to_update.keys())}")
+                    logger.info(f"[FK UPDATE] {target_table} id={row_dict['id']} updated: {list(to_update.keys())}")
             return int(row_dict["id"])
 
         else:
             raise ValueError("existing_policy must be 'keep', 'update', or 'error'.")
 
+    # ------------------------------------------------------------------
+    # CASE 2: identity does NOT exist -> would INSERT
+    # ------------------------------------------------------------------
     # No existing row → INSERT with identity (+ extras)
+    if dry_run:
+        # just say "we would create one", return a synthetic ID
+        # you can also log the payload for the preview
+        logger.info(f"[DRY-RUN][FK INSERT] Would insert into {target_table}: {payload}")
+        return int(dry_run_id_seed), payload
     cols = list(payload.keys())
     vals = [payload[c] for c in cols]
     placeholders = ", ".join(["?"] * len(vals))
@@ -390,6 +411,7 @@ def run_updates_from_dataframe(
 
     # Wrap in a transaction (even for dry-run we won't commit)
     try:
+        pending_fk_payloads = {}
         for _, row in df_updates.iterrows():
             rec_id = row[key_column]
 
@@ -434,7 +456,7 @@ def run_updates_from_dataframe(
                     continue
 
                 # Use strict resolver (requires full identity to insert; dedup via UNIQUE+UPSERT)
-                fk_id = resolve_or_create_fk(
+                fk_result = resolve_or_create_fk(
                     conn=conn,
                     target_table=target,
                     row=row,
@@ -442,16 +464,25 @@ def run_updates_from_dataframe(
                     identity_map=IDENTITY_MAP,      # make sure this is defined/imported
                     on_missing_identity="skip",      # skip if identity incomplete (don’t error)
                     allow_extra_attrs=True,
+                    dry_run=dry_run,
+                    dry_run_id_seed=-1
                 )
-                if fk_id is not None:
-                    old_fk = current_main.get(fk_col)
-                    if _values_different(old_fk, fk_id):
-                        updates_main[fk_col] = fk_id
+                if isinstance(fk_result, tuple):
+                    fk_id, fk_payload = fk_result
+                    updates_main[fk_col] = fk_id
+                    pending_fk_payloads[(target, fk_id)] = fk_payload
+
                 else:
-                    logger.warning(
-                        f"[FK] Skipping resolution for {fk_col} on {main_table}.{key_column}={rec_id} "
-                        f"(no id provided and identity incomplete for {target})."
-                    )
+                    fk_id = fk_result
+                    if fk_id is not None:
+                        old_fk = current_main.get(fk_col)
+                        if _values_different(old_fk, fk_id):
+                            updates_main[fk_col] = fk_id
+                    else:
+                        logger.warning(
+                            f"[FK] Skipping resolution for {fk_col} on {main_table}.{key_column}={rec_id} "
+                            f"(no id provided and identity incomplete for {target})."
+                        )
 
             # 3) Direct main-table updates (skip PK + FK columns) / only add if changed
             main_cols = set(schema[main_table])
@@ -504,7 +535,48 @@ def run_updates_from_dataframe(
     # 6) Write previews
     n_previewed = 0
     if updated_rows:
+        # build the combined preview first
         preview_df = pd.concat(updated_rows, ignore_index=True)
+        # inject readable values for synthetic (dry-run) FK inserts
+        if pending_fk_payloads and updated_rows:
+            rels = get_fk_info(conn, main_table)  # {fk_col: {"table": target, ...}}
+            preview_df = pd.concat(updated_rows, ignore_index=True)
+
+            for idx, row in preview_df.iterrows():
+                for fk_col, fk in rels.items():
+                    target_table = fk["table"]
+                    if fk_col not in preview_df.columns:
+                        continue
+                    fk_val = row[fk_col]
+                    if pd.isna(fk_val):
+                        continue
+                    # safe cast
+                    try:
+                        fk_int = int(fk_val)
+                    except (ValueError, TypeError):
+                        continue
+                    # only handle synthetic (negative) IDs
+                    if fk_int >= 0:
+                        continue
+
+                    key = (target_table, fk_int)
+                    payload = pending_fk_payloads.get(key)
+                    if not payload:
+                        continue
+
+                    # figure out base name (condition_id -> condition)
+                    base = fk_col[:-3] if fk_col.endswith("_id") else fk_col
+                    ident_cols = IDENTITY_MAP.get(target_table, [])
+                    for c in ident_cols:
+                        new_col = f"new_{base}_{c}"
+                        if new_col not in preview_df.columns:
+                            preview_df[new_col] = None
+                        preview_df.at[idx, new_col] = payload.get(c)
+
+                    status_col = f"{base}_fk_status"
+                    if status_col not in preview_df.columns:
+                        preview_df[status_col] = None
+                    preview_df.at[idx, status_col] = "would create (dry-run)"
         preview_path = out_dir / f"{main_table}_update_preview.csv"
         preview_df.to_csv(preview_path, index=False)
         logger.info(f"[Preview] wrote: {preview_path}")
@@ -523,103 +595,6 @@ def run_updates_from_dataframe(
 
     return out_dir, n_previewed, n_missing
 
-# ------------------------------- Run update without IDs ---------------------------------------------
-# ----------------------------------Helper---------------------------------------------
-
-def attach_ids_via_identity(conn, main_table, df, identity_cols, on_ambiguous="error"):
-    """
-    For each CSV row, find the existing row's id using identity_cols.
-    Returns: (df_with_id, missing_rows_df, ambiguous_rows_df)
-    """
-    cur = conn.cursor()
-
-    ids = []
-    missing_idx = []
-    ambiguous_idx = []
-
-    for idx, row in df.iterrows():
-        where = " AND ".join([f"{c} = ?" for c in identity_cols])
-        vals = tuple(row[c] for c in identity_cols)
-        cur.execute(f"SELECT id FROM {main_table} WHERE {where}", vals)
-        results = cur.fetchall()
-
-        if len(results) == 1:
-            ids.append(results[0][0])
-        elif len(results) == 0:
-            ids.append(None)
-            missing_idx.append(idx)
-        else:
-            ids.append(None)
-            ambiguous_idx.append(idx)
-
-    df2 = df.copy()
-    df2["id"] = ids
-
-    df_missing = df2.loc[missing_idx]
-    df_ambig = df2.loc[ambiguous_idx]
-
-    if on_ambiguous == "error" and len(df_ambig):
-        raise ValueError(f"Ambiguous identity matches for {len(df_ambig)} rows.")
-
-    return df2, df_missing, df_ambig
-
-# ------------------------------------main function ----------------------------------------------------
-
-def run_updates_from_dataframe_without_ids(
-    conn,
-    main_table: str,
-    df,                                 # already read CSV as DataFrame
-    *,
-    identity_cols: List[str],           # natural key columns to identify rows
-    on_ambiguous: str = "error",         # "error" | "keep"
-    create_missing_main: bool = False,
-    dry_run: bool = True,
-    output_dir: str = "../data/update_previews",
-):
-    
-    # 1) Check identity columns present
-    missing_cols = [c for c in identity_cols if c not in df.columns]
-    if missing_cols:
-        raise ValueError(f"CSV missing identity columns for {main_table}: {missing_cols}")
-
-    # 2) Attach ids by identity
-    df2, df_missing, df_ambig = attach_ids_via_identity(conn, main_table, df, identity_cols, on_ambiguous=on_ambiguous)
-
-    if not df_ambig.empty:
-        # safer default: stop and let the user disambiguate
-        raise ValueError(f"Ambiguous identity matches in {len(df_ambig)} rows. Resolve duplicates or strengthen identity.")
-
-    # 3) Optionally create missing main rows (requires full identity & any required NOT NULLs)
-    if create_missing_main and not df_missing.empty:
-        cur = conn.cursor()
-        # Build insert for only identity cols here (or include more if needed)
-        cols = identity_cols
-        placeholders = ", ".join(["?"] * len(cols))
-        for _, r in df_missing.iterrows():
-            vals = [r[c] for c in cols]
-            cur.execute(
-                f"INSERT INTO {main_table} ({', '.join(cols)}) VALUES ({placeholders})",
-                vals
-            )
-            new_id = cur.lastrowid
-            df2.loc[_, "id"] = new_id
-        conn.commit()
-
-    # 4) Now every updatable row should have an id
-    updatable = df2[df2["id"].notna()].copy()
-    if updatable.empty:
-        print("No rows with resolvable IDs; nothing to update.")
-        return
-
-    # 5) Use the existing update engine
-    return run_updates_from_dataframe(
-        conn=conn,
-        main_table=main_table,
-        df_updates=updatable,
-        key_column="id",
-        dry_run=dry_run,
-        output_dir=output_dir,
-    )
 # --------------------------------------------------------------------------------------
 # Convenience runner for CSV path
 # --------------------------------------------------------------------------------------
@@ -650,289 +625,12 @@ def run_updates_from_csv(
             )
         # Delegate to the no-id path
         if not key_column:
-            logger.warning("No key_column specified; resolving IDs via identity.")
-        return run_updates_from_dataframe_without_ids(
-            conn=conn,
-            main_table=main_table,
-            df=df,
-            identity_cols=identity_cols,
-            on_ambiguous=on_ambiguous,
-            create_missing_main=create_missing_main,
-            dry_run=dry_run,
-            output_dir=output_dir,
-        )
+            logger.error("No key_column specified.")
+            raise ValueError("key_column must be specified when CSV lacks IDs.")
 
 # ----------------------------------------------------------------
 # Safe execution using an update dictionary with preview
-# ----------------------------------------------------------------
-def execute_update_1(db_path, query, params=None, dry_run=True, preview_sql=None,update_dict=None, output_dir="../data/update_previews"):
-    """Safely execute an UPDATE query with optional preview (old→new values)."""
-    logger.info(f"\n--- UPDATE QUERY ---\n{query}\nParams: {params}\nDry-run: {dry_run}")
-
-    preview_summary = ""
-
-    # --- Generate preview BEFORE applying update ---
-    if preview_sql:
-        try:
-            with sqlite3.connect(db_path) as conn:
-                df = pd.read_sql_query(preview_sql, conn, params=params or {})
-
-            if not df.empty:
-                # Add side-by-side new values if update_dict provided
-                changed_cols = []
-                if update_dict:
-                    for col, new_val in update_dict.items():
-                        df[f"new_{col}"] = new_val
-                        if col in df.columns:
-                            df[f"change_{col}"] = df[col].astype(str) + " --> " + str(new_val)
-                            changed_cols.append(col)
-
-                # Save preview CSV
-                Path(output_dir).mkdir(parents=True, exist_ok=True)
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                out = Path(output_dir) / f"update_preview_{ts}.csv"
-                df.to_csv(out, index=False)
-
-                # Terminal summary
-                preview_summary = (
-                    f" Preview saved: {out.name} ({len(df)} rows)\n"
-                    f"   Affected table: {Path(out).stem.split('_')[2] if '_' in out.name else 'Unknown'}\n"
-                )
-                if changed_cols:
-                    preview_summary += f"   Columns to update: {', '.join(changed_cols)}\n"
-                
-                logger.info(f"Preview saved to {out} ({len(df)} rows); changed columns: {changed_cols}")
-            else:
-                preview_summary = " No matching rows found for update preview."
-
-                logger.info(preview_summary)
-        except Exception as e:
-            logger.error(f"Preview error: {e}Could not generate preview.", exc_info=True)
-            print("Could not generate preview.")
-
-    # --- Stop here if dry run
-    if dry_run:
-        logger.info("Dry-run mode: no changes committed.")
-        print(" Dry-run mode: no changes committed.")
-        return 0
-
-    # --- Execute actual update
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.cursor()
-        cur.execute(query, params or {})
-        affected = cur.rowcount
-        conn.commit()
-
-    logger.info(f"{affected} rows updated.")
-    print(f"{affected} rows updated successfully.")
-    return affected
-
-# -----------------------------------------------------------------
-#                     Update records using CSV flile
-# -----------------------------------------------------------------
-def update_records_from_csv(
-    db_path,
-    table,
-    csv_path,
-    key_column="id",
-    dry_run=True,
-    output_dir="../data/update_previews"
-):
-    """
-    Update records in `table` using row-specific values from a CSV file.
-
-    The CSV must contain one column matching the key_column (usually 'id'),
-    and one or more columns that correspond to table fields to update.
-
-    Example CSV:
-        id,is_valid,user_name
-        1,Y,Masoumeh
-        2,N,Alex
-
-    Example call:
-        update_records_from_csv(DB_PATH, "Experiment", "../data/updates/exp_fix.csv")
-    """
-    logger.info(f"\n--- UPDATE FROM CSV ---\nTable: {table}\nFile: {csv_path}")
-
-    df_updates = pd.read_csv(csv_path)
-    if key_column not in df_updates.columns:
-        raise ValueError(f"CSV must include a '{key_column}' column.")
-
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.cursor()
-        updated_rows = []
-
-        for _, row in df_updates.iterrows():
-            record_id = row[key_column]
-            update_dict = {col: row[col] for col in df_updates.columns if col != key_column}
-            set_clause = ", ".join([f"{col} = :{col}" for col in update_dict])
-            params = update_dict | {key_column: record_id}
-
-            # Preview SQL for the current record
-            preview_sql = f"SELECT * FROM {table} WHERE {key_column} = :{key_column}"
-
-            # --- Preview mode: capture old and new values
-            try:
-                df_old = pd.read_sql_query(preview_sql, conn, params=params)
-                if not df_old.empty:
-                    for col, new_val in update_dict.items():
-                        df_old[f"new_{col}"] = new_val
-                        if col in df_old.columns:
-                            df_old[f"change_{col}"] = df_old[col].astype(str) + " → " + str(new_val)
-                    updated_rows.append(df_old)
-            except Exception as e:
-                logger.error(f"Error previewing row {record_id}: {e}")
-
-            # --- Perform update if not dry run
-            if not dry_run:
-                sql = f"UPDATE {table} SET {set_clause} WHERE {key_column} = :{key_column}"
-                cur.execute(sql, params)
-
-        if not dry_run:
-            conn.commit()
-
-    # --- Combine previewed rows into one CSV
-    if updated_rows:
-        df_preview = pd.concat(updated_rows, ignore_index=True)
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out = Path(output_dir) / f"update_from_csv_preview_{table}_{ts}.csv"
-        df_preview.to_csv(out, index=False)
-
-        print(f"✅ Preview saved: {out} ({len(df_preview)} rows)")
-        if dry_run:
-            print("ℹ️ Dry-run mode: no changes committed.")
-        else:
-            print(f"✅ {len(df_preview)} rows updated successfully.")
-
-        logger.info(f"Preview saved to {out} ({len(df_preview)} rows)")
-    else:
-        print("⚠️ No matching records found in database for CSV input.")
-        logger.info("No matching records found for CSV update.")
-
-# ---------------------------------------------------------
-def update_records_from_csv_relational_nested_1(db_path, main_table, csv_path, key_column="id",commit_missing_fk=False, dry_run=True, output_dir="../data/update_previews"):
-    """
-    Fully relational CSV-based database updater.
-    Handles:
-      - Multi-table detection (Experiment + related tables)
-      - Nested updates (e.g. condition_name, condition_concentration_value)
-      - Automatic FK resolution / insertion
-      - Missing record logging
-      - Safe dry-run previews
-    """
-    logger.info(f"\n--- UPDATE FROM CSV ---\nTable: {main_table}\nFile: {csv_path}")
-    df_updates = pd.read_csv(csv_path)
-    if key_column not in df_updates.columns:
-        raise ValueError(f"CSV must include a '{key_column}' column.")
-
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = Path(output_dir) / f"{Path(csv_path).stem}_{ts}"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    updated_rows, missing_records = [], []
-
-    with sqlite3.connect(db_path) as conn:
-        cur = conn.cursor()
-
-        # --- Map foreign keys ---
-        cur.execute(f"PRAGMA foreign_key_list({main_table});") # output: (id, seq, table, from, to, on_update, on_delete, match)
-        fk_info = {
-            fk[3]: {"table": fk[2], "to_col": fk[4]} 
-            for fk in cur.fetchall()
-        }
-        logger.info(f"Detected FKs: {fk_info}")
-
-        # --- Gather schema for each related table ---
-        table_columns = {}
-        for tbl in [main_table] + [fk["table"] for fk in fk_info.values()]:
-            cur.execute(f"PRAGMA table_info({tbl});")
-            table_columns[tbl] = [col[1] for col in cur.fetchall()]
-
-        # --- Iterate through CSV updates ---
-        for _, row in df_updates.iterrows():
-            record_id = row[key_column]
-            cur.execute(f"SELECT COUNT(*) FROM {main_table} WHERE {key_column} = ?", (record_id,))
-            if cur.fetchone()[0] == 0:
-                missing_records.append(row)
-                continue
-
-            updates_main = {}
-
-            # --- Step 1: resolve nested FK entities like condition_* ---
-            for fk_col, fk in fk_info.items():
-                target_table = fk["table"]
-                related_cols = [c for c in df_updates.columns if c.startswith(target_table.lower() + "_")]
-                if not related_cols:
-                    continue
-
-                # Extract sub-dict for nested fields
-                nested_values = {
-                    c.replace(f"{target_table.lower()}_", ""): row[c]
-                    for c in related_cols if not pd.isna(row[c])
-                }
-                if not nested_values:
-                    continue
-
-                # Try to match an existing row in target table
-                where_clause = " AND ".join([f"{k} = ?" for k in nested_values])
-                cur.execute(f"SELECT id FROM {target_table} WHERE {where_clause}", tuple(nested_values.values()))
-                result = cur.fetchone()
-
-                if result:
-                    fk_id = result[0]
-                elif commit_missing_fk:
-                    # Insert new related row
-                    cols, vals = zip(*nested_values.items())
-                    placeholders = ", ".join(["?"] * len(vals))
-                    cur.execute(f"INSERT INTO {target_table} ({', '.join(cols)}) VALUES ({placeholders})", vals)
-                    fk_id = cur.lastrowid
-                    logger.info(f"Inserted new {target_table} entry: {nested_values} (id={fk_id})")
-                else:
-                    fk_id = None
-
-                if fk_id:
-                    updates_main[fk_col] = fk_id
-
-            # --- Step 2: handle simple columns directly in main table ---
-            for col in df_updates.columns:
-                if col not in table_columns[main_table] or col == key_column:
-                    continue
-                val = row[col]
-                if not pd.isna(val):
-                    updates_main[col] = val
-
-            # --- Preview old record ---
-            df_old = pd.read_sql_query(f"SELECT * FROM {main_table} WHERE {key_column} = ?", conn, params=(record_id,))
-            if not df_old.empty:
-                for col, new_val in updates_main.items():
-                    df_old[f"new_{col}"] = new_val
-                    if col in df_old.columns:
-                        df_old[f"change_{col}"] = df_old[col].astype(str) + " → " + str(new_val)
-                updated_rows.append(df_old)
-
-            # --- Execute update ---
-            if not dry_run and updates_main:
-                set_clause = ", ".join([f"{col} = :{col}" for col in updates_main])
-                params = updates_main | {key_column: record_id}
-                cur.execute(f"UPDATE {main_table} SET {set_clause} WHERE {key_column} = :{key_column}", params)
-
-        if not dry_run:
-            conn.commit()
-
-    # --- Write output summaries ---
-    if updated_rows:
-        pd.concat(updated_rows, ignore_index=True).to_csv(out_dir / f"{main_table}_update_preview.csv", index=False)
-        logger.info(f"Preview written to {out_dir}")
-        print(f"✅ {len(updated_rows)} updates previewed.")
-    if missing_records:
-        pd.DataFrame(missing_records).to_csv(out_dir / f"missing_records.csv", index=False)
-        print(f"⚠️ {len(missing_records)} missing IDs logged.")
-    if dry_run:
-        print("ℹ️ Dry-run mode: no DB changes applied.")
-
-# ----------------------------------------------------------------
+# --------------------------------------------------------------
 
 def update_records_from_csv_relational_strict(
     db_path,
@@ -1167,6 +865,7 @@ def execute_update(
     preview_output_dir: str = "../data/update_previews",
     dry_run: bool = True,
     chunk_size: int = 500,                # for large IN (...) lists
+    pending_fk_payloads: dict | None = None,
 ):
     """
     Generic UPDATE engine:
@@ -1283,7 +982,7 @@ def execute_update(
         table_relationships=TABLE_RELATIONSHIPS,
         identity_map=IDENTITY_MAP,
         main_table=main_table,
-        key_column=key_column,
+        key_column=key_column
     )
 
     # Choose a robust index: prefer main 'id' if present, else '__pk__'
@@ -1387,6 +1086,40 @@ def execute_update(
         df_old.rename(columns={"__pk__": "id"}, inplace=True)
 
     preview_path = out_dir / f"{main_table}_filter_update_preview.csv"
+    if pending_fk_payloads:
+        rels = TABLE_RELATIONSHIPS.get(main_table, {})
+        for idx, row in df_old.iterrows():
+            for fk_col, target_table in rels.items():
+                if fk_col not in df_old.columns:
+                    continue
+                fk_val = row[fk_col]
+                if pd.isna(fk_val):
+                    continue
+                try:
+                    fk_int = int(fk_val)
+                except (ValueError, TypeError):
+                    continue
+                if fk_int >= 0:
+                    continue  # real FK
+
+                key = (target_table, fk_int)
+                payload = pending_fk_payloads.get(key)
+                if not payload:
+                    continue
+
+                base = fk_col[:-3] if fk_col.endswith("_id") else fk_col
+                ident_cols = IDENTITY_MAP.get(target_table, [])
+                for c in ident_cols:
+                    new_col = f"new_{base}_{c}"
+                    if new_col not in df_old.columns:
+                        df_old[new_col] = None
+                    df_old.at[idx, new_col] = payload.get(c)
+
+                status_col = f"{base}_fk_status"
+                if status_col not in df_old.columns:
+                    df_old[status_col] = None
+                df_old.at[idx, status_col] = "would create (dry-run)"
+
     df_old.to_csv(preview_path, index=False)
 
 
@@ -1425,7 +1158,10 @@ def preprocess_update_dict_for_fk(
     on_missing_identity: str = "error",     # "error" | "skip"
     allow_extra_attrs: bool = True,
     identity_aliases: dict[str, dict[str, str]] | None = None,
-) -> dict:
+    dry_run: bool = True,
+    dry_run_id_seed: int = -1,
+    pending_fk_payloads: dict | None = None
+) -> tuple[dict, dict]:
     """
     Convert natural-key specs present in update_dict into main-table *_id fields.
 
@@ -1487,7 +1223,8 @@ def preprocess_update_dict_for_fk(
 
         # 3) Resolve/create FK row using identity + extras (resolver will include extras only on insert)
         row_like = pd.Series(provided_target_fields)
-        fk_id = resolve_or_create_fk(
+        pending_fk_payloads = pending_fk_payloads or {}
+        fk_result = resolve_or_create_fk(
             conn=conn,
             target_table=target_table,
             row=row_like,
@@ -1497,12 +1234,18 @@ def preprocess_update_dict_for_fk(
             existing_policy="update", # Note: change this if you want different behavior on existing rows in the fk table 
             mutable_extras=MUTABLE_EXTRAS,
             allow_extra_attrs=allow_extra_attrs,  # extras are accepted on insert path
+            dry_run=dry_run,
+            dry_run_id_seed=-1
         )
-        if fk_id is None:
-            # shouldn't happen with on_missing_identity="error"
-            continue
-
-        # 4) Write back *_id
+        if isinstance(fk_result, tuple):
+            fk_id, payload = fk_result
+            pending_fk_payloads[(target_table, fk_id)] = payload
+        else:
+            fk_id = fk_result
+            
+            if fk_id is None:
+                # shouldn't happen with on_missing_identity="error"
+                continue
         new_ud[fk_col] = int(fk_id)
 
         # 5) Strip ALL target-table fields (identity + extras) from the update dict
@@ -1514,7 +1257,7 @@ def preprocess_update_dict_for_fk(
             for alias in identity_aliases[target_table].values():
                 new_ud.pop(alias, None)
 
-    return new_ud
+    return new_ud, pending_fk_payloads
 
 
 def update_records_by_filter(db_path, main_table, update_dict, filters=None, key_column = "id", limit=None, dry_run=True, output_dir="../data/update_previews"):
@@ -1541,7 +1284,12 @@ def update_records_by_filter(db_path, main_table, update_dict, filters=None, key
         fk_map = get_fk_info(conn, main_table)
         schema = get_multi_table_schema(conn, main_table, fk_map)
 
-        update_dict_resolved = preprocess_update_dict_for_fk(
+        logical_rels = TABLE_RELATIONSHIPS.get(main_table, {})
+        for _, target_table in logical_rels.items():
+            if target_table not in schema:
+                schema[target_table] = get_table_columns(conn, target_table)
+
+        new_ud, pending_fk_payloads = preprocess_update_dict_for_fk(
             conn=conn,
             main_table=main_table,
             update_dict=update_dict,
@@ -1551,6 +1299,9 @@ def update_records_by_filter(db_path, main_table, update_dict, filters=None, key
             on_missing_identity="error",       # require full identity if any identity field present
             allow_extra_attrs=True,
             identity_aliases=IDENTITY_ALIASES,
+            dry_run=dry_run,
+            dry_run_id_seed=-1,
+            pending_fk_payloads={}
         )
 
         # Now execute_update sees only main-table columns (e.g., condition_id), so it won't error
@@ -1558,39 +1309,13 @@ def update_records_by_filter(db_path, main_table, update_dict, filters=None, key
             db_path,
             main_table=main_table,
             key_column=key_column,
-            update_dict=update_dict_resolved,
+            update_dict=new_ud,
             id_subquery_sql=sub,
             id_subquery_params=params,
             preview_output_dir=output_dir,
             dry_run=dry_run,
+            pending_fk_payloads=pending_fk_payloads,
         )
-# ----------------------------------------------------------------  
-# 2. Update records with invalid categorical values
-# ----------------------------------------------------------------
-def fix_invalid_categorical_values(db_path, table, column, allowed_values, replacement="unknown", filters=None, limit = None, dry_run=True):
-    """
-    Replace invalid categorical values with a default or normalized fallback.
-    """
-    df_invalid = find_invalid_categorical_values(db_path, table, column, allowed_values, filters=filters, limit=limit)
-     # No invalid values found
-    if df_invalid is None or df_invalid.empty:
-        logger.info(f"No invalid {column} values found in {table}.")
-        return 0
-
-    invalid_vals = tuple(df_invalid[column].dropna().unique())
-    query = f"""
-    UPDATE {table}
-    SET {column} = :replacement
-    WHERE {column} NOT IN ({','.join(['?']*len(allowed_values))})
-      AND {column} IN ({','.join(['?']*len(invalid_vals))});
-    """
-    preview_query = f"""
-    SELECT * FROM {table}
-    WHERE {column} NOT IN ({','.join(['?']*len(allowed_values))})
-      AND {column} IN ({','.join(['?']*len(invalid_vals))})
-    params = {"replacement": replacement, **{f"p{i}": v for i, v in enumerate(allowed_values + invalid_vals)}}"""
-    return execute_update(db_path, query, params, dry_run, preview_query, update_dict)
-
 # -------------------------------------------------------------------------
 # 3. Update missing values with defaults
 # -------------------------------------------------------------------------
@@ -1704,7 +1429,6 @@ def update_invalid_foreign_keys(
     filters: Optional[dict] = None,
     dry_run: bool = True,
     output_dir: str = "../data/update_previews",
-    use_left_join: bool = False,               # set True to use LEFT JOIN orphan detection
 ):
     """
     
@@ -1714,7 +1438,7 @@ def update_invalid_foreign_keys(
       - repoint to the ID resolved/created from an identity payload (repoint_identity).
 
     """
-    rrepoint_to_ids = repoint_to_ids or {}
+    repoint_to_ids = repoint_to_ids or {}
     repoint_from_identity = repoint_from_identity or {}
     filters = filters or {}
 
@@ -1733,6 +1457,8 @@ def update_invalid_foreign_keys(
         for fk_col, fk in fk_map.items():
             target_table = fk["table"]
             to_col = fk.get("to_col", "id")
+
+            pending_fk_payloads = {}
 
             # Build subquery: ids whose fk_col is non-null but doesn't exist in target_table
             extra_where = [
@@ -1768,7 +1494,7 @@ def update_invalid_foreign_keys(
                 if identity_map is None or table_columns is None:
                     raise ValueError("repoint_identity requires identity_map and table_columns.")
                 # Resolve/create the target row to get an ID
-                new_id = resolve_or_create_fk(
+                fk_result = resolve_or_create_fk(
                     conn=conn,
                     target_table=target_table,
                     row=pd.Series(identity_payload),
@@ -1778,11 +1504,20 @@ def update_invalid_foreign_keys(
                     allow_extra_attrs=allow_extra_attrs,
                     existing_policy=existing_policy,
                     mutable_extras=mutable_extras,
+                    dry_run=dry_run,
+                    dry_run_id_seed=-1
                 )
-                if new_id is None:
-                    logger.info(f"[SKIP] Could not resolve/create identity for {fk_col} → leaving unchanged")
-                    continue
-                update_dict = {fk_col: int(new_id)}
+                if isinstance(fk_result, tuple):
+                    new_id, payload = fk_result
+                    pending_fk_payloads[(target_table, new_id)] = payload
+                    update_dict = {fk_col: int(new_id)}
+
+                else:
+                    new_id = fk_result
+                    if new_id is None:
+                        logger.info(f"[SKIP] Could not resolve/create identity for {fk_col} → leaving unchanged")
+                        continue
+                    update_dict = {fk_col: int(new_id)}
 
             else:
                 raise ValueError("strategy must be 'nullify', 'repoint_id', or 'repoint_identity'.")
@@ -1800,6 +1535,7 @@ def update_invalid_foreign_keys(
                 id_subquery_params=params,
                 preview_output_dir=col_out_dir,
                 dry_run=dry_run,
+                pending_fk_payloads=pending_fk_payloads,
             )
 
             total_changed += n_changed
@@ -1828,10 +1564,10 @@ def update_all_records(
     with sqlite3.connect(db_path) as conn:
         fk_map = get_fk_info(conn, main_table)
         schema = get_multi_table_schema(conn, main_table, fk_map)
-
+        pending_fk_payloads = {}
         effective_update = dict(update_dict)
         if allow_fk_resolution:
-            effective_update = preprocess_update_dict_for_fk(
+            effective_update, pending_fk_payloads = preprocess_update_dict_for_fk(
                 conn=conn,
                 main_table=main_table,
                 update_dict=effective_update,
@@ -1841,6 +1577,9 @@ def update_all_records(
                 on_missing_identity="error",
                 allow_extra_attrs=True,
                 identity_aliases=IDENTITY_ALIASES,
+                dry_run=dry_run,
+                dry_run_id_seed=-1,
+                pending_fk_payloads=pending_fk_payloads
             )
 
         id_sub = f"SELECT {main_table}.{key_column} FROM {main_table}"
@@ -1853,6 +1592,7 @@ def update_all_records(
             id_subquery_params={},
             preview_output_dir=output_dir,
             dry_run=dry_run,
+            pending_fk_payloads=pending_fk_payloads
         )
 
 # -----------------------------------------------------------------
@@ -2034,8 +1774,8 @@ if __name__ == "__main__":
     #updated = update_records_by_filter(DB_PATH, "Experiment", {"is_valid": "Y"}, {"is_valid": "N"}, dry_run=True)
     #update_records_from_csv_relational_strict(DB_PATH, "Experiment", "../data/update_previews/test_update.csv", dry_run=True)
     # identity_cols=["organism_id", "protein_id", "strain_id", "condition_id", "capture_setting_id", "user_id", "date", "replicate"]
-    #update_dict = {"capture_type":"test", "time_interval":"200", "exposure_time":"50", "dye_concentration_value":"50", "dye_concentration_unit":"nM", "fluorescent_dye":"test2", "laser_wavelength":"48", "laser_intensity":"10", "camera_binning":"2", "objective_magnification":"60", "pixel_size":"100"}
-    #out_dir, n_changed, n_targeted = update_records_by_filter(DB_PATH,main_table="Experiment",update_dict=update_dict,filters={"condition":"cpt"},dry_run=True)
+    update_dict = {"capture_type":"test_las", "time_interval":"200", "exposure_time":"50", "dye_concentration_value":"50", "dye_concentration_unit":"nM", "fluorescent_dye":"test2", "laser_wavelength":"999", "laser_intensity":"10", "camera_binning":"2", "objective_magnification":"60", "pixel_size":"100"}
+    out_dir, n_changed, n_targeted = update_records_by_filter(DB_PATH,main_table="Experiment",update_dict=update_dict,filters={"condition":"cpt"},dry_run=True)
 
     #parent_out_dir, per_column_dirs, n_changed, n_targeted = update_missing_values_with_default(DB_PATH, main_table="Experiment", column_defaults={"experiment_path": "will be", "comment": "TO BE"}, filters = {"condition":"cpt"}, dry_run=True)
     #parent_out_dir, per_column_dirs, n_changed, n_targeted = update_missing_values_with_default(DB_PATH, main_table="CaptureSetting", column_defaults={"pixel_size":"100"}, filters = {}, dry_run=True)
@@ -2050,6 +1790,6 @@ if __name__ == "__main__":
     
     #out_dir, n_changed, n_targeted = update_all_records(DB_PATH,main_table="Experiment",update_dict={"condition":"cpt", 'concentration_value':"69", "concentration_unit":"um"},dry_run=True)
 
-    out_dir, n_changed, n_targeted = update_invalid_categorical_values(DB_PATH, "CaptureSetting",column="dye_concentration_unit",allowed_values=ALLOWED_CATEGORICALS["dye_concentration_unit"],default_for_unknown="unknown",dry_run=True)
+    #out_dir, n_changed, n_targeted = update_invalid_categorical_values(DB_PATH, "CaptureSetting",column="dye_concentration_unit",allowed_values=ALLOWED_CATEGORICALS["dye_concentration_unit"],default_for_unknown="unknown",dry_run=True)
 
     print(out_dir, n_changed, n_targeted)
