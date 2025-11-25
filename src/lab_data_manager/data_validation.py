@@ -4,6 +4,7 @@ import os
 import re
 import logging
 from datetime import datetime
+from typing import List, Dict, Tuple, Any
 # Setup logging
 log_file_path = "/Volumes/Masoumeh/Masoumeh/Masoumeh_data/1-Rfa1/confocal/validation.log"
 logging.basicConfig(
@@ -129,10 +130,31 @@ def validate_numeric_fields(row: dict, file_category: str):
             )
     return issues
 
-def validate_row(row, category):
+def validate_row(row: Dict[str, Any], category:str) -> Tuple[bool, List[str]]:
     """
-    Validate the data in a row. This function can be extended to include more complex validation logic.
-    For now, it checks if required fields are present and if numeric fields can be converted to float.
+    This function can be extended to include more complex validation logic.
+    
+    Validate a single metadata row based on its file category.
+
+    This function performs a series of checks depending on the metadata type:
+    - Required field presence
+    - Filename validity (via `validate_filename`)
+    - Date format (YYYYMMDD)
+    - Numeric fields (e.g., replicate, field_of_view)
+    - Categorical fields (capture type, organism, extensions)
+    - Category-specific rules:
+        * RAW files: laser intensity format, dye units, objective magnification, user email, etc.
+        * MASK files: mask type validation
+
+    Args:
+        row (Dict[str, Any]): A dictionary representing one CSV metadata row.
+        category (str): The file category (e.g. "raw", "mask") used to apply category-specific checks.
+
+    Returns:
+        Tuple[bool, List[str]]:
+            - A boolean indicating whether the row is valid.
+            - A list of validation issues (empty if the row is valid).
+    
     """
     issues = []
     # Check required fields
@@ -248,7 +270,30 @@ def validate_row(row, category):
         logging.info(f"Row {file_name} validated OK")
         return True, []
     
-def validate_csv(file_path: str, output_path: str):
+def validate_csv(file_path: str, output_path: str)-> List[Dict[str, Any]]:
+
+    """
+    Validate all rows in a metadata CSV file and save invalid rows to a separate file.
+
+    This function:
+    - Reads the CSV row-by-row.
+    - Calls `validate_row` for each row.
+    - Collects any invalid rows along with their issues.
+    - Writes invalid rows to `output_path` for manual review.
+
+    Args:
+        file_path (str): Path to the input CSV containing metadata rows.
+        output_path (str): Path to save the CSV of invalid rows.
+
+    Returns:
+        List[Dict[str, Any]]:
+            A list of dictionaries, each containing:
+                - "row": the original row dict
+                - "row_number": line number in the input CSV
+                - "issues": list of validation issues identified
+            Returns an empty list if all rows are valid.
+
+    """
     invalid_rows = []
     with open(file_path, newline="") as f:
         reader = csv.DictReader(f)
@@ -278,11 +323,26 @@ def validate_csv(file_path: str, output_path: str):
 
 
 # -------------- for the analysis metadata validation -----------
-def validate_experiment_signature(signature: str):
+def validate_experiment_signature(signature: str)-> List[str]:
     """
     Validate the experiment signature string.
-    Expected format: YYYYMMDD|NN|organism|protein|condition|capture_type
-    Returns a list of issues (empty if valid).
+
+    Expected format:
+        YYYYMMDD|NN|organism|protein|condition|capture_type
+
+    The function splits the signature into its components and validates:
+    - Date format and actual calendar validity
+    - Replicate number format (two digits)
+    - Organism membership in ALLOWED_ORGANISMS
+    - Protein and condition strings (alphanumeric)
+    - Capture type membership in CAPTURE_TYPES
+
+    Args:
+        signature (str): Experiment signature in the expected pipe-delimited format.
+
+    Returns:
+        List[str]: A list of validation issues (empty if the signature is valid).
+
     """
     signature_issues = []
     
@@ -321,7 +381,25 @@ def validate_experiment_signature(signature: str):
     
     return signature_issues
 
-def validate_analysis_row(row):
+def validate_analysis_row(row:Dict[str, Any]) -> List[str]:
+    """
+    Validate a single row of analysis metadata.
+
+    This function checks the consistency and format of key fields
+    associated with analysis results, including:
+    - Linked experiment signatures
+    - Result type, value, and numerical consistency
+    - Analysis method validity
+    - Sample size and standard error types
+    - Presence and existence of analysis file paths
+
+    Args:
+        row (Dict[str, Any]): A dictionary representing one CSV row from
+            the analysis metadata file.
+
+    Returns:
+        List[str]: A list of validation issues. Empty if the row is valid.
+    """
     issues = []
 
     # validate linked_experiment_signatures
@@ -370,9 +448,28 @@ def validate_analysis_row(row):
     return issues
 
 
-def validate_analysis_metadata(file_path: str, output_path: str):
+def validate_analysis_metadata(file_path: str, output_path: str)-> List[Dict[str, Any]]:
     """
-    Validate analysis metadata CSV file.
+
+    Validate all rows in an analysis metadata CSV file and save invalid rows.
+
+    This function:
+    - Reads the analysis metadata CSV using DictReader.
+    - Validates each row using `validate_analysis_row`.
+    - Collects invalid rows along with their row numbers and issues.
+    - Saves the invalid rows into a separate CSV for manual review.
+
+    Args:
+        file_path (str): Path to the input analysis metadata CSV file.
+        output_path (str): Path where invalid rows will be written.
+
+    Returns:
+        List[Dict[str, Any]]:
+            A list of invalid row entries, each containing:
+                - "row": original row dict
+                - "row_number": row index from the CSV (1-based)
+                - "issues": list of issues detected
+            Returns an empty list if all rows pass validation.
     """
     invalid_rows = []
     with open(file_path, newline="") as f:
