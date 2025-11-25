@@ -4,6 +4,7 @@ import os
 import re
 from pathlib import Path
 import logging
+from typing import List, Dict, Any
 
 logging.basicConfig(
     filename="/Volumes/Masoumeh/Masoumeh/Masoumeh_data/1-Rfa1/confocal/db_import.log",
@@ -130,7 +131,88 @@ def get_or_create_id(cursor, table, unique_fields: dict):
 
 
 '''
-def insert_from_csv(csv_path, db_path, skipped_rows):
+def insert_from_csv(csv_path:str, db_path:str, skipped_rows:List[Dict[str, Any]]) -> None:
+    """
+    Insert metadata and file records from a CSV file into the SQLite database.
+
+    This function reads a metadata CSV (one row per file) and populates a normalized
+    microscopy database with:
+    
+    - Dimension tables (Organism, Protein, StrainOrCellLine, Condition, User, CaptureSetting)
+    - Experiment records (linking the above dimensions)
+    - File tables (RawFiles, TrackingFiles, Masks, AnalysisFiles)
+    - Link table between Experiment and AnalysisFiles (ExperimentAnalysisFiles)
+    
+    The behavior depends on the `file_category` column in each CSV row
+
+    * `"raw"`:
+        - Performs foreign-key lookups/creations for organism, protein, strain, condition, user,
+          and capture settings using `get_or_create_id`.
+        - Checks if an Experiment with the same unique key
+          (`organism_id`, `protein_id`, `strain_id`, `condition_id`, `capture_setting_id`,
+          `user_id`, `date`, `replicate`) already exists.
+          - If it exists, reuses its `id`.
+          - If not, inserts a new Experiment row.
+        - Inserts a row into `RawFiles` if the `(experiment_id, file_name, field_of_view, file_type)`
+          combination does not already exist. Duplicate raw files are skipped and recorded in
+          `skipped_rows`.
+    * Non-`"raw"` categories (Track files, masks, analysis files):
+        - Assumes the corresponding Experiment already exists.
+        - Builds an experiment signature:
+          `YYYYMMDD|replicate|organism|protein|condition|capture_type`
+          and uses `get_experiment_id_from_signature` to find `experiment_id`.
+        - If no matching experiment is found, the row is skipped and recorded in `skipped_rows`.
+        - then depending on the category, it checks if that record is already existed in the corresponding table and if not, inserts the record.
+        Otherwise the record will be added to the skipped file. 
+
+    Parameters
+    ----------
+    csv_path : str
+        Path to the input CSV file containing file-level metadata. The CSV must have at least
+        the following columns (some are category-dependent):
+        - `file_category` : {"raw", "tracking", "mask", "analysis_file"}
+        - `file_name`, `file_path`, `file_type`, `field_of_view`
+        - `organism`, `protein`, `strain`, `condition`, `capture_type`
+        - `date`, `replicate`, `is_valid`, `comment`, `experiment_path`
+        - User info: `user_name`, `user_last_name`, `user_email`
+        - Capture settings: `exposure_time`, `time_interval`, `fluorescent_dye`,
+          `dye_concentration_value`, `dye_concentration_unit`, `laser_wavelength`,
+          `laser_intensity`, `camera_binning`, `objective_magnification`, `pixel_size`
+        - Tracking params (for tracking files): `threshold`, `linking_distance`,
+          `gap_closing_distance`, `max_frame_gap`
+        - Mask info (for mask files): `mask_type`, `segmentation_method`,
+          `segmentation_parameters`
+
+    db_path : str
+        Path to the SQLite database file to be updated.
+
+    skipped_rows : list[dict[str, Any]]
+        A list that will be mutated in-place. Any row that is skipped due to:
+        - being empty,
+        - missing experiment,
+        - duplicate experiment insert,
+        - duplicate file record,
+        - duplicate analysis file–experiment link,
+        is appended to this list as a dict containing all original CSV columns plus
+        an additional key `"skip_reason"` describing why it was skipped.
+
+    Returns
+    -------
+    None
+        The function has no return value. It updates the database and the `skipped_rows` list
+        in place.
+
+    Notes
+    -----
+    This function relies on helper utilities defined elsewhere:
+        - `get_or_create_id(cursor, table_name, lookup_dict)`
+        - `normalize_value(value)`
+        - `get_experiment_id_from_signature(cursor, experiment_signature)`
+
+    Any `sqlite3.IntegrityError` encountered during Experiment insertion is treated as a
+    duplicate and the corresponding row is recorded in `skipped_rows`. 
+    
+    """
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
@@ -140,7 +222,7 @@ def insert_from_csv(csv_path, db_path, skipped_rows):
             # Optional: skip invalid rows
             # skip the empty rows
             if not any(row.values()):
-                logging.info("Skipped empty row {row}")
+                logging.info(f"Skipped empty row {row}")
                 continue
             if row["file_category"] == "raw":
                 # --- Foreign key lookups ---
@@ -337,13 +419,65 @@ def insert_from_csv(csv_path, db_path, skipped_rows):
 
 # Analysis files and results insertion
 
-def insert_analysis_csv(csv_path, db_path, skipped_analysis_rows):
+def insert_analysis_csv(csv_pat:str, db_path:str, skipped_analysis_rows:List[Dict[str, Any]]) -> None:
     """
-    Insert analysis metadata from analysis_metadata.csv into:
-    - AnalysisFiles
-    - ExperimentAnalysisFiles (link table)
-    - AnalysisResults (if result fields are filled)
-    - AnalysisResultExperiments (link table for results)
+    Insert analysis-level metadata from an analysis metadata CSV into the database. This function processes a CSV where each row corresponds to an analysis result
+    generated from one or more experiments. It populates the following tables:
+    - AnalysisFiles: the metadata record of files that have been generated by the analysis pipelines.(example: .mat files csv files, etc.)
+    - ExperimentAnalysisFiles (Link table connecting each analysis files to one or more experiments.)
+    - AnalysisResults :Stores individual analysis result records (e.g., diffusion coefficient,
+        bound fraction, parameters, etc.).
+    - AnalysisResultExperiments (Link table connecting each analysis result to one or more experiments.)
+
+    **Behavior**
+    -----------
+    The function performs the following steps for each non-empty CSV row:
+
+    1. **Check for duplicate
+    If found:
+       - The row is skipped
+       - The row is added to `skipped_analysis_rows`
+       - The existing `result_id` is reused
+
+    2. **Insert new row** (if not duplicate) : The new row's ID (`result_id`) is recorded.
+
+    3. **Link result to experiments via signatures** 
+
+    **Expected CSV Columns**
+    -------------------------
+    The CSV must contain at least:
+    - `analysis_files_path`
+    - `analysis_method`
+    - `linked_experiment_signatures` (comma-separated)
+    - Optional result fields:
+        - `result_type`
+        - `result_value`
+        - `sample_size`
+        - `standard_error`
+        - `analysis_parameters`
+
+    **Parameters**
+    -------------
+    csv_path : str  
+        Path to the analysis metadata CSV.
+
+    db_path : str  
+        Path to the SQLite database.
+
+    skipped_analysis_rows : list[dict[str, Any]]  
+        A list modified in-place. Any skipped row (duplicate result, duplicate link,
+        missing experiment) is appended with the full row contents.
+
+    **Returns**
+    ---------
+    None  
+        The function commits changes to the database and updates the skipped rows list.
+
+    **Notes**
+    --------
+    • This function assumes experiments referenced via signatures already exist.  
+    • Uses helper function:  
+      `get_experiment_id_from_signature(cursor, signature)`  
     """
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -424,8 +558,45 @@ def insert_analysis_csv(csv_path, db_path, skipped_analysis_rows):
 
 
 # ------------ Utility to write skipped rows to CSV for review ------------
-def write_skipped_to_csv(skipped_rows, filename="skipped_rows.csv"):
-    """Save skipped rows into a CSV file."""
+def write_skipped_to_csv(skipped_rows:List[Dict[str, Any]], filename:str ="skipped_rows.csv"):
+    """
+    
+    Write skipped database-insert rows to a CSV file.
+
+    It takes a list of dictionaries (each dictionary representing a skipped CSV row with
+    an added `"skip_reason"` field) and saves them into a CSV file for inspection.
+
+    **Behavior**
+    -----------
+    - If `skipped_rows` is empty, the function returns immediately and nothing is written.
+    - Otherwise:
+        • Creates/overwrites the output CSV file.  
+        • Writes column headers based on the keys of the *first* row.  
+        • Writes all skipped rows as CSV rows.
+
+    **Parameters**
+    -------------
+    skipped_rows : list[dict[str, Any]]
+        A list of dictionaries representing rows that were skipped during database insertion.
+        All dictionaries should contain the same keys. One of the keys is typically
+        `"skip_reason"` explaining why the row was skipped.
+
+    filename : str, optional
+        Output CSV filename (default: `"skipped_rows.csv"`).  
+        Can be a simple file name or a full path.
+
+    **Returns**
+    ---------
+    None  
+        Writes a CSV file as a side effect. Logs the file location.
+
+    **Notes**
+    --------
+    - Output directory must be writable.
+    - The function does not enforce consistent fieldnames across rows; it assumes the caller
+      maintains consistent structure in `skipped_rows`.
+
+    """
     if not skipped_rows:
         return
 
