@@ -7,7 +7,7 @@ import logging
 from typing import List, Dict, Any
 
 logging.basicConfig(
-    filename="/Volumes/Masoumeh/Masoumeh/Masoumeh_data/1-Rfa1/confocal/db_import.log",
+    filename="./db_import.log",
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
@@ -131,7 +131,7 @@ def get_or_create_id(cursor, table, unique_fields: dict):
 
 
 '''
-def insert_from_csv(csv_path:str, db_path:str, skipped_rows:List[Dict[str, Any]]) -> list[Dict[str, Any]]:
+def insert_from_csv(csv_path:str, db_path:str, skipped_rows:List[Dict[str, Any]]=[]) -> list[Dict[str, Any]]:
     """
     Insert metadata and file records from a CSV file into the SQLite database.
 
