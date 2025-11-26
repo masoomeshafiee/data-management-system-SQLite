@@ -1,0 +1,29 @@
+[project]
+name = "lab-data-manager"            
+version = "0.1.0"
+description = "A SQLite data management toolkit for microscopy metadata management and analysis."
+authors = [
+  { name="Masoumeh Shafiei", email="masoomeshafiee97@gmail.com" }
+]
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+
+dependencies = [
+    "pandas",
+    "numpy",
+]
+
+[project.urls]
+"GitHub Repo" = "https://github.com/masoomeshafiee/data-management-system-SQLite"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
