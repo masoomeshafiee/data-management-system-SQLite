@@ -226,16 +226,16 @@ def insert_from_csv(csv_path:str, db_path:str, skipped_rows:List[Dict[str, Any]]
                 continue
             if row["file_category"] == "raw":
                 # --- Foreign key lookups ---
-                organism_id = get_or_create_id(cursor, "Organism", {"name": normalize_value(row["organism"])})
-                protein_id = get_or_create_id(cursor, "Protein", {"name": normalize_value(row["protein"])})
-                strain_id = get_or_create_id(cursor, "StrainOrCellLine", {"name": normalize_value(row["strain"])})
+                organism_id = get_or_create_id(cursor, "Organism", {"organism_name": normalize_value(row["organism"])})
+                protein_id = get_or_create_id(cursor, "Protein", {"protein_name": normalize_value(row["protein"])})
+                strain_id = get_or_create_id(cursor, "StrainOrCellLine", {"strain_name": normalize_value(row["strain"])})
                 condition_id = get_or_create_id(cursor, "Condition", {
-                    "name": normalize_value(row["condition"]),
+                    "condition_name": normalize_value(row["condition"]),
                     "concentration_value":normalize_value(row["concentration_value"]),
                     "concentration_unit": normalize_value(row["concentration_unit"])
                 })
                 user_id = get_or_create_id(cursor, "User", {
-                    "name": normalize_value(row["user_name"]),
+                    "user_name": normalize_value(row["user_name"]),
                     "last_name": normalize_value(row["user_last_name"]),
                     "email": normalize_value(row["user_email"])
                 })
