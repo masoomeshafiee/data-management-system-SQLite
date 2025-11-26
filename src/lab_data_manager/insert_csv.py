@@ -131,7 +131,7 @@ def get_or_create_id(cursor, table, unique_fields: dict):
 
 
 '''
-def insert_from_csv(csv_path:str, db_path:str, skipped_rows:List[Dict[str, Any]]) -> None:
+def insert_from_csv(csv_path:str, db_path:str, skipped_rows:List[Dict[str, Any]]) -> list[Dict[str, Any]]:
     """
     Insert metadata and file records from a CSV file into the SQLite database.
 
@@ -416,7 +416,7 @@ def insert_from_csv(csv_path:str, db_path:str, skipped_rows:List[Dict[str, Any]]
     conn.commit()
     conn.close()
     print("Database updated successfully.")
-
+    return skipped_rows
 # Analysis files and results insertion
 
 def insert_analysis_csv(csv_pat:str, db_path:str, skipped_analysis_rows:List[Dict[str, Any]]) -> None:
@@ -555,6 +555,7 @@ def insert_analysis_csv(csv_pat:str, db_path:str, skipped_analysis_rows:List[Dic
     conn.commit()
     conn.close()
     print("Database updated successfully.")
+    return skipped_analysis_rows
 
 
 # ------------ Utility to write skipped rows to CSV for review ------------
