@@ -54,9 +54,9 @@ def get_experiment_id_from_signature(cursor, signature):
                     JOIN Protein p ON e.protein_id = p.id
                     JOIN Condition c ON e.condition_id = c.id
                     JOIN CaptureSetting cs ON e.capture_setting_id = cs.id
-                    WHERE o.name = ?
-                      AND p.name = ?
-                      AND c.name = ?
+                    WHERE o.organism_name = ?
+                      AND p.protein_name = ?
+                      AND c.condition_name = ?
                       AND cs.capture_type = ?
                       AND e.date = ?
                       AND e.replicate = ?
