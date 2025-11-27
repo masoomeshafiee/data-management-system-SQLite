@@ -4,8 +4,8 @@ Centralized module for deleting records from the database.
 import sqlite3
 import logging
 import pandas as pd
-from queries import COLUMN_MAP, build_query_context, find_invalid_foreign_keys, find_near_duplicates_by_columns, find_orphan_parents, find_missing_values, find_experiments_missing_files, find_incomplete_linked_entities_generalized,find_invalid_categorical_values
-from queries import logger as queries_logger  # import the queries logger instance
+from .queries import (COLUMN_MAP, build_query_context, find_invalid_foreign_keys, find_near_duplicates_by_columns, find_orphan_parents, find_missing_values, find_experiments_missing_files, find_incomplete_linked_entities_generalized,find_invalid_categorical_values)
+from .queries import logger as queries_logger  # import the queries logger instance
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional

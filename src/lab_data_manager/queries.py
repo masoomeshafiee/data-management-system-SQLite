@@ -9,7 +9,7 @@ from collections import deque
 # ---------------------------------------------------------------------
 logger = logging.getLogger("queries")
 if not logger.handlers:
-    handler = logging.FileHandler("../data/db_export.log")
+    handler = logging.FileHandler("./db_export.log")
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     handler.setFormatter(formatter)
     logger.addHandler(handler)
