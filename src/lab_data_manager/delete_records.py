@@ -19,7 +19,7 @@ OUTPUT_DIR = "../data/deletion_previews"
 
 logger = logging.getLogger("delete_records")
 if not logger.handlers:
-    handler = logging.FileHandler("../data/db_deletion.log")
+    handler = logging.FileHandler("./db_deletion.log")
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     handler.setFormatter(formatter)
     logger.addHandler(handler)
