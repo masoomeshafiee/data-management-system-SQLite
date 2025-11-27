@@ -5,8 +5,9 @@ import re
 import logging
 from datetime import datetime
 from typing import List, Dict, Tuple, Any
+from pathlib import Path
 # Setup logging
-log_file_path = "/Volumes/Masoumeh/Masoumeh/Masoumeh_data/1-Rfa1/confocal/validation.log"
+log_file_path = "./validation.log"
 logging.basicConfig(
     filename=log_file_path,
     level=logging.INFO,
@@ -305,6 +306,9 @@ def validate_csv(file_path: str, output_path: str)-> List[Dict[str, Any]]:
 
     # Save invalid rows to CSV
     if invalid_rows:
+        output_path_path = Path(output_path)
+        # Ensure the parent directory exists
+        output_path_path.parent.mkdir(parents=True, exist_ok=True)
         fieldnames = list(invalid_rows[0]["row"].keys()) + ["row_number"] + ["issues"]
         with open(output_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
