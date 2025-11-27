@@ -8,6 +8,7 @@ from queries import COLUMN_MAP, build_query_context, find_invalid_foreign_keys, 
 from queries import logger as queries_logger  # import the queries logger instance
 from datetime import datetime
 from pathlib import Path
+from typing import List, Dict, Any, Optional
 
 
 
@@ -42,8 +43,26 @@ logging.basicConfig(
 # ---------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------
-def execute_delete(db_path, query, params=None, dry_run=True, output_dir="../data/deletion_previews"):
-    """Safely execute a DELETE query with optional dry-run mode."""
+def execute_delete(db_path:str, query:str, params:Optional[Dict[str, Any]]=None, dry_run:bool = True, output_dir:str="../data/deletion_previews") -> Dict[str, Any]:
+    """Safely execute a DELETE query with optional dry-run mode.
+
+    The preview is exported to a timestamped CSV file for auditing.  
+    Actual deletion only occurs if `dry_run=False`.
+
+    Parameters:
+    - db_path: Path to the SQLite database.
+    - query: The DELETE SQL query to execute.
+    - params: (Optional) parameters for the SQL query.
+    - dry_run: If True, no records are deleted; only a preview is generated and saved to CSV.
+    - output_dir: Directory to save preview CSV files.
+
+    Returns:
+    A dictionary with keys:
+        - "deleted": number of rows deleted (0 if dry_run)
+        - "preview_count": number of rows that matched the delete criteria
+        - "preview_path": path to the CSV file with preview data (if any)
+    
+    """
     logger.info("\n--- DELETE QUERY ---")
     logger.info(f"Executing DELETE query: {query} with params: {params} (dry_run={dry_run})")
 
@@ -72,7 +91,7 @@ def execute_delete(db_path, query, params=None, dry_run=True, output_dir="../dat
 
     if dry_run:
         logger.info("Dry-run mode: no records deleted.")
-        return 0
+        return {"deleted": 0, "preview_count": n_preview, "preview_path": str(csv_path) if n_preview > 0 else None}
 
     with sqlite3.connect(db_path) as conn:
         cur = conn.cursor()
@@ -82,7 +101,7 @@ def execute_delete(db_path, query, params=None, dry_run=True, output_dir="../dat
 
     
     logger.info(f"Deleted {deleted} rows.")
-    return deleted
+    return {"deleted": deleted, "preview_count": n_preview, "preview_path": str(csv_path) if n_preview > 0 else None}
 
 def _resolve_id_column(df, table, id_column=None):
     """
@@ -122,11 +141,49 @@ def _resolve_id_column(df, table, id_column=None):
 # ---------------------------------------------------------------------
 # 1. Delete by filter (general-purpose)
 # ---------------------------------------------------------------------
-def delete_records_by_filter(db_path, table, filters=None, limit=None, dry_run=True):
+def delete_records_by_filter(db_path: str, table: str, filters: Optional[Dict[str, Any]] = None, limit: Optional[int] = None, dry_run:bool=True)-> Dict[str, Any]:
     """
     Delete rows from a table matching given filters.
 
-    Uses COLUMN_MAP + build_query_context to resolve joins and parameters.
+    It uses the dynamic query-building system
+    (`COLUMN_MAP` + `build_query_context`) to correctly handle joins, foreign-key
+    resolution, and parameter binding.
+
+    **Behavior**
+    -----------
+    1. `build_query_context()` is used to translate high-level filters into:
+       • SQL WHERE clauses  
+       • SQL JOINs  
+       • query parameters  
+
+       Example filter:
+           filters = {"organism": "yeast", "capture_type": "fast"}
+
+    2. A DELETE query is constructed dynamically:
+       - If joins are required (e.g., filtering by foreign fields), they are added.
+       - If filters are provided, WHERE clauses are added.
+       - If a limit is provided, `LIMIT n` is appended.
+
+    3. The final query is passed to `execute_delete()` which:
+       - Runs a SELECT preview of the rows that **would be deleted**.
+       - Saves the preview to CSV.
+       - Executes the deletion only if `dry_run=False`.
+
+    parameters: 
+    - db_path: Path to the SQLite database.
+    - table: Name of the table to delete from.
+    - filters: Optional dictionary of filters to apply for the rows to be deleted. 
+    - limit: Optional limit on the number of rows to delete.
+    - dry_run: If True, no records are deleted; only a preview is generated and saved to CSV.
+
+    returns: 
+    A dictionary with keys:
+        - "deleted": number of rows deleted (0 if dry_run)
+        - "preview_count": number of rows that matched the delete criteria
+        - "preview_path": path to the CSV file with preview data (if any)
+    
+        
+
     """
     filters = filters or {}
     where_clauses, params, joins = build_query_context(
