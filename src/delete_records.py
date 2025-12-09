@@ -11,14 +11,14 @@ from pathlib import Path
 
 
 
-OUTPUT_DIR = "../data/deletion_previews"
+OUTPUT_DIR = "/Users/masoomeshafiee/Desktop/Presentation/deletion_previews"
 # ---------------------------------------------------------------------
 # Module logger for deletions
 # ---------------------------------------------------------------------
 
 logger = logging.getLogger("delete_records")
 if not logger.handlers:
-    handler = logging.FileHandler("../data/db_deletion.log")
+    handler = logging.FileHandler("/Users/masoomeshafiee/Desktop/Presentation/db_deletion.log")
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     handler.setFormatter(formatter)
     logger.addHandler(handler)
@@ -42,7 +42,7 @@ logging.basicConfig(
 # ---------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------
-def execute_delete(db_path, query, params=None, dry_run=True, output_dir="../data/deletion_previews"):
+def execute_delete(db_path, query, params=None, dry_run=True, output_dir="/Users/masoomeshafiee/Desktop/Presentation/deletion_previews"):
     """Safely execute a DELETE query with optional dry-run mode."""
     logger.info("\n--- DELETE QUERY ---")
     logger.info(f"Executing DELETE query: {query} with params: {params} (dry_run={dry_run})")
@@ -291,6 +291,7 @@ if __name__ == "__main__":
     DB_PATH = "/Users/masoomeshafiee/Projects/data_organization/data-management-system-SQLite/db/Reyes_lab_data.db" # <-- change this
     
     #deleted = delete_records_by_filter(DB_PATH, "Experiment", {"is_valid": "N"}, dry_run=True)
+
     #deleted = delete_orphan_records(DB_PATH, "TrackingFiles", "experiment_id", "Experiment", dry_run=True)
 
     #deleted= delete_orphan_records(DB_PATH, "Masks", "experiment_id", "Experiment", dry_run=True)
@@ -301,6 +302,8 @@ if __name__ == "__main__":
     
     #deleted = delete_records_from_finder(DB_PATH, main_table="Experiment", finder_func=find_experiments_missing_files, finder_kwargs={"file_types": ["tracking"]},dry_run=True)
 
+
+    #*********
     #deleted = delete_records_from_finder(DB_PATH,find_incomplete_linked_entities_generalized,finder_kwargs=dict(base_table="Experiment", present_bridge=("AnalysisResultExperiments", "experiment_id", "analysis_result_id"), present_entity=("AnalysisResults", "id"), missing_bridge=("ExperimentAnalysisFiles", "experiment_id","analysis_file_id" ), missing_entity=("AnalysisFiles", "id"), filters={"is_valid": "Y"}, limit=50),dry_run=True)
     #deleted = delete_records_from_finder(DB_PATH, main_table="Experiment", finder_func=find_incomplete_linked_entities_generalized, finder_kwargs={"base_table":"Experiment", "present_bridge":("AnalysisResultExperiments", "experiment_id", "analysis_result_id"), "present_entity":("AnalysisResults", "id"), "missing_bridge":("ExperimentAnalysisFiles", "experiment_id","analysis_file_id" ), "missing_entity":("AnalysisFiles", "id"), "filters":{"is_valid": "Y"}, "limit":50}, dry_run=True)
 

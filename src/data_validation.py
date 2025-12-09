@@ -5,7 +5,7 @@ import re
 import logging
 from datetime import datetime
 # Setup logging
-log_file_path = "/Volumes/Masoumeh/Masoumeh/Masoumeh_data/1-Rfa1/confocal/validation.log"
+log_file_path = "/Users/masoomeshafiee/Desktop/Presentation/validation.log"
 logging.basicConfig(
     filename=log_file_path,
     level=logging.INFO,
@@ -404,8 +404,8 @@ def validate_analysis_metadata(file_path: str, output_path: str):
 
 # Example usage
 if __name__ == "__main__":
-    metadata_csv_path = "/Volumes/Masoumeh/Masoumeh/Masoumeh_data/1-Rfa1/confocal/metadata_complete.csv"
-    metadata_output_path = "/Volumes/Masoumeh/Masoumeh/Masoumeh_data/1-Rfa1/confocal/invalid_rows.csv"
+    metadata_csv_path = "/Users/masoomeshafiee/Desktop/Presentation/3.metadata_complete.csv"
+    metadata_output_path = "/Users/masoomeshafiee/Desktop/Presentation/invalid_rows.csv"
     analysis_csv_path = "/Volumes/Masoumeh/Masoumeh/Masoumeh_data/1-Rfa1/dwell time/CPT/500ms interval/analysis_metadata2.csv"
     analysis_output_path = "/Volumes/Masoumeh/Masoumeh/Masoumeh_data/1-Rfa1/dwell time/CPT/500ms interval/invalid_analysis_rows.csv"
     invalids_rows = validate_csv(metadata_csv_path, metadata_output_path)

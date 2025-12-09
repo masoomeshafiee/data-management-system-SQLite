@@ -9,7 +9,7 @@ from collections import deque
 # ---------------------------------------------------------------------
 logger = logging.getLogger("queries")
 if not logger.handlers:
-    handler = logging.FileHandler("../data/db_export.log")
+    handler = logging.FileHandler("/Users/masoomeshafiee/Desktop/Presentation/db_export.log")
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     handler.setFormatter(formatter)
     logger.addHandler(handler)
@@ -25,8 +25,8 @@ logging.basicConfig(
 '''
 
 BASE_EXPERIMENT_QUERY = """
-    SELECT Experiment.id, Organism.name as organism, Protein.name as protein, StrainOrCellLine.name as strain, Condition.name as condition, Condition.concentration_value, Condition.concentration_unit,
-            CaptureSetting.capture_type, CaptureSetting.exposure_time, CaptureSetting.time_interval, User.name as user, Experiment.date, Experiment.replicate, Experiment.is_valid, Experiment.comment, Experiment.experiment_path
+    SELECT Experiment.id, Organism.organism_name as organism, Protein.protein_name as protein, StrainOrCellLine.strain_name as strain, Condition.condition_name as condition, Condition.concentration_value, Condition.concentration_unit,
+            CaptureSetting.capture_type, CaptureSetting.exposure_time, CaptureSetting.time_interval, User.user_name as user, Experiment.date, Experiment.replicate, Experiment.is_valid, Experiment.comment, Experiment.experiment_path
     FROM Experiment Experiment
     JOIN Organism ON Experiment.organism_id = Organism.id
     JOIN Protein ON Experiment.protein_id = Protein.id
@@ -339,7 +339,7 @@ def execute_query(db_path, query, params=None):
 
 # 1. Get metadata for a given experiment ID
 def get_experiment_metadata(db_path, experiment_id):
-    query = BASE_EXPERIMENT_QUERY + "WHERE e.id = ?;"
+    query = BASE_EXPERIMENT_QUERY + "WHERE Experiment.id = ?;"
     return execute_query(db_path, query, (experiment_id,))
 
 # 2. Experiment lookup
@@ -765,13 +765,13 @@ def find_duplicate_experiments(db_path, filters=None):
     where_clauses, params, joins = build_query_context("Experiment", filters)
     query = f"""
     SELECT 
-        Organism.name AS organism,
-        Protein.name AS protein,
-        Condition.name AS condition,
+        Organism.organism_name AS organism,
+        Protein.protein_name AS protein,
+        Condition.condition_name AS condition,
         Experiment.date,
         Experiment.replicate,
         CaptureSetting.capture_type,
-        User.name AS user,
+        User.user_name AS user,
         COUNT(*) AS duplicate_count,
         GROUP_CONCAT(Experiment.id) AS experiment_ids
     FROM Experiment
@@ -787,7 +787,7 @@ def find_duplicate_experiments(db_path, filters=None):
         query += " WHERE " + " AND ".join(where_clauses)
 
     query += """
-    GROUP BY Organism.name, Protein.name, Condition.name, Experiment.date, Experiment.replicate, CaptureSetting.capture_type, User.name
+    GROUP BY Organism.organism_name, Protein.protein_name, Condition.condition_name, Experiment.date, Experiment.replicate, CaptureSetting.capture_type, User.user_name
     HAVING COUNT(*) > 1
     ORDER BY duplicate_count DESC
     """
@@ -1212,7 +1212,7 @@ def find_incomplete_linked_entities_generalized(
 if __name__ == "__main__":
     DB_PATH = "/Users/masoomeshafiee/Projects/data_organization/data-management-system-SQLite/db/Reyes_lab_data.db" # <-- change this
 
-    #print(get_experiment_metadata(DB_PATH, 1))
+    #result = get_experiment_metadata(DB_PATH, 1)
     #print(list_experiments_by_protein(DB_PATH, "Rfa1", 2))
     #print(list_experiments_by_user(DB_PATH, "masoumeh", "rfa1"))
 
@@ -1221,37 +1221,53 @@ if __name__ == "__main__":
     #result = list_entity(DB_PATH,requested_columns=["*"],main_table="Experiment",filters={"condition": "HU", "organism": "yeast", "protein":"Rfa1" },limit=20)
 
     #result = list_experiments_between_dates(DB_PATH, "20230901", "20231030", filters = {"condition": "cpt", "is_valid":"Y"}, limit=50)
-    #result = count_experiments_by_period(DB_PATH, period="year", filters = {"condition": "HU", "is_valid":"Y", "capture_type":"fast"})
-    #result = find_most_recent_experiment(DB_PATH, {"condition": "HU", "concentration_value" : "200"})
-    #result = list_experiments_in_period(DB_PATH, year=2023, filters = {"condition": "cpt", "capture_type": "fast"}, limit=50)
-    #result = find_earliest_experiment(DB_PATH, {"condition": "cpt", "concentration_value" : "40", "dye_concentration_value": "50", "time_interval": "1"})
-    #result = count_experiments_trend(DB_PATH, group_by=["capture_type"], filters={"is_valid":"Y"})
-    #result = list_recent_experiments(DB_PATH, days=580, filters={"condition": "cpt"}, limit=50)
-    #result = count_entity_by_another(DB_PATH, "*", ["analysis_file_type"], filters=None)
-    #result = count_entity_by_another(DB_PATH, "experiment_id", ["user_name"])  
-    #result = find_experiments_missing_files(DB_PATH, file_types = ["raw", "tracking", "mask", "analysis"], filters={"is_valid":"Y"}, limit=50)
 
-    result = find_missing_values(DB_PATH, ["user_name"],["email"], main_table= "User", mode = "any", limit=50)
+    #result = count_experiments_by_period(DB_PATH, period="year", filters = {"condition": "HU", "is_valid":"Y", "capture_type":"fast"})
+
+    #result = find_most_recent_experiment(DB_PATH, {"condition": "HU", "concentration_value" : "200"})
+
+    #result = list_experiments_in_period(DB_PATH, year=2023, filters = {"condition": "cpt", "capture_type": "fast"}, limit=50)
+
+    #result = find_earliest_experiment(DB_PATH, {"condition": "cpt", "concentration_value" : "40", "dye_concentration_value": "50", "time_interval": "1"})
+
+    #result = count_experiments_trend(DB_PATH, group_by=["capture_type"], filters={"is_valid":"Y"})
+
+    #result = list_recent_experiments(DB_PATH, days=580, filters={"condition": "cpt"}, limit=50)
+
+    #count_entity_by_another(DB_PATH, "*", ["analysis_file_type"], filters=None)
+
+    #result = count_entity_by_another(DB_PATH, "experiment_id", ["user_name"])  
+
+    result = find_experiments_missing_files(DB_PATH, file_types = ["tracking", "mask"], filters={"is_valid":"Y"}, limit=50)
+
+    #result = find_missing_values(DB_PATH, ["user_name"],["email"], main_table= "User", mode = "any", limit=50)
 
     #result = find_duplicate_experiments(DB_PATH, filters=None)
-    #result = find_duplicates_by_columns(DB_PATH, table="Condition", key_column="id", include_columns=["name"], filters=None)
+
+    #find_duplicates_by_columns(DB_PATH, table="Condition", key_column="id", include_columns=["condition_name"], filters=None)
+
     #result = find_near_duplicates_by_columns(DB_PATH,table="Experiment", include_columns= ["organism", "protein", "condition"],show_columns=["user_name", "date"], filters=None)
+    
     #result = count_unique_combinations(DB_PATH, columns=["capture_type", "protein"], table="CaptureSetting", filters=None)
 
-    #result = count_experiments_with_files(DB_PATH, group_by="user_name", file_types=("raw", "tracking", "mask", "analysis_result"), limit=50)
+    
+    #****result = count_experiments_with_files(DB_PATH, group_by="user_name", file_types=("raw", "tracking", "mask", "analysis_result"), limit=50)
+    
     #result = find_invalid_foreign_keys(DB_PATH, child_table="RawFiles", fk_column="experiment_id", parent_table="Experiment", filters={"raw_file_type": "w1bf"},limit=10000)
+    
     #result = find_orphan_parents(DB_PATH, parent_table="Experiment", child_table="Masks", fk_column="experiment_id", filters={"is_valid": "Y"}, limit=50)
+
     #result = find_invalid_categorical_values(DB_PATH, table="Masks", column="mask_type", allowed_values=["cell", "nucleus", "Nucleus-G1"], filters=None, limit=500)
 
-    #result = find_incomplete_linked_entities_generalized(DB_PATH, base_table="Experiment", present_entity=("RawFiles", "experiment_id"), missing_entity=("TrackingFiles", "experiment_id"),filters={"is_valid": "Y"}, limit=50)
-    #result = find_incomplete_linked_entities_generalized(DB_PATH, base_table="Experiment", present_bridge=("AnalysisResultExperiments", "experiment_id", "analysis_result_id"), present_entity=("AnalysisResults", "id"), missing_bridge=("ExperimentAnalysisFiles", "experiment_id","analysis_file_id" ), missing_entity=("AnalysisFiles", "id"), filters={"is_valid": "Y"}, limit=50)
+    # find_incomplete_linked_entities_generalized(DB_PATH, base_table="Experiment", present_entity=("RawFiles", "experiment_id"), missing_entity=("TrackingFiles", "experiment_id"),filters={"is_valid": "Y"}, limit=50)
+    # find_incomplete_linked_entities_generalized(DB_PATH, base_table="Experiment", present_bridge=("AnalysisResultExperiments", "experiment_id", "analysis_result_id"), present_entity=("AnalysisResults", "id"), missing_bridge=("ExperimentAnalysisFiles", "experiment_id","analysis_file_id" ), missing_entity=("AnalysisFiles", "id"), filters={"is_valid": "Y"}, limit=50)
 
 
 
     # save to CSV
     if result is not None:
         print(result)
-        result.to_csv("/Users/masoomeshafiee/Projects/data_organization/data-management-system-SQLite/data/experiment_query_result.csv", index=False)
+        result.to_csv("/Users/masoomeshafiee/Desktop/Presentation/experiment_query_result.csv", index=False)
         print("Query results saved to experiment_query_result.csv")
     else:
         print("No results found or an error occurred.")

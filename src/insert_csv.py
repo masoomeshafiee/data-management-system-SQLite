@@ -6,7 +6,7 @@ from pathlib import Path
 import logging
 
 logging.basicConfig(
-    filename="/Volumes/Masoumeh/Masoumeh/Masoumeh_data/1-Rfa1/confocal/db_import.log",
+    filename="/Users/masoomeshafiee/Desktop/Presentation/db_import.log",
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
@@ -53,9 +53,9 @@ def get_experiment_id_from_signature(cursor, signature):
                     JOIN Protein p ON e.protein_id = p.id
                     JOIN Condition c ON e.condition_id = c.id
                     JOIN CaptureSetting cs ON e.capture_setting_id = cs.id
-                    WHERE o.name = ?
-                      AND p.name = ?
-                      AND c.name = ?
+                    WHERE o.organism_name = ?
+                      AND p.protein_name = ?
+                      AND c.condition_name = ?
                       AND cs.capture_type = ?
                       AND e.date = ?
                       AND e.replicate = ?
@@ -76,9 +76,9 @@ def get_experiment_id_from_signature(cursor, signature):
                     JOIN Protein p ON e.protein_id = p.id
                     JOIN Condition c ON e.condition_id = c.id
                     JOIN CaptureSetting cs ON e.capture_setting_id = cs.id
-                    WHERE o.name = ?
-                      AND p.name = ?
-                      AND c.name = ?
+                    WHERE o.organism_name = ?
+                      AND p.protein_name = ?
+                      AND c.condition_name = ?
                       AND cs.capture_type = ?
                       AND e.date = ?
                       AND e.replicate = ?
@@ -144,11 +144,11 @@ def insert_from_csv(csv_path, db_path, skipped_rows):
                 continue
             if row["file_category"] == "raw":
                 # --- Foreign key lookups ---
-                organism_id = get_or_create_id(cursor, "Organism", {"name": normalize_value(row["organism"])})
-                protein_id = get_or_create_id(cursor, "Protein", {"name": normalize_value(row["protein"])})
-                strain_id = get_or_create_id(cursor, "StrainOrCellLine", {"name": normalize_value(row["strain"])})
+                organism_id = get_or_create_id(cursor, "Organism", {"organism_name": normalize_value(row["organism"])})
+                protein_id = get_or_create_id(cursor, "Protein", {"protein_name": normalize_value(row["protein"])})
+                strain_id = get_or_create_id(cursor, "StrainOrCellLine", {"strain_name": normalize_value(row["strain"])})
                 condition_id = get_or_create_id(cursor, "Condition", {
-                    "name": normalize_value(row["condition"]),
+                    "condition_name": normalize_value(row["condition"]),
                     "concentration_value":normalize_value(row["concentration_value"]),
                     "concentration_unit": normalize_value(row["concentration_unit"])
                 })
@@ -442,9 +442,9 @@ def write_skipped_to_csv(skipped_rows, filename="skipped_rows.csv"):
 # --- Example Run ---
 if __name__ == "__main__":
     update_analysis = False  # Set to True if you have analysis metadata to insert
-    CSV_PATH = "/Volumes/Masoumeh/Masoumeh/Masoumeh_data/1-Rfa1/confocal/metadata_complete.csv"
+    CSV_PATH = "/Users/masoomeshafiee/Desktop/Presentation/3.metadata_complete.csv"
     ANALYSIS_CSV_PATH = "/Volumes/Masoumeh/Masoumeh/Masoumeh_data/1-Rfa1/dwell time/UV/analysis_metadata.csv"
-    DB_PATH = "/Users/masoomeshafiee/Projects/data_organization/Reyes_lab_data.db"
+    DB_PATH = "/Users/masoomeshafiee/Projects/data_organization/data-management-system-SQLite/db/Reyes_lab_data.db"
     skipped_rows = []
     skipped_analysis_rows = []
     insert_from_csv(CSV_PATH, DB_PATH, skipped_rows)
@@ -455,6 +455,6 @@ if __name__ == "__main__":
         insert_analysis_csv(ANALYSIS_CSV_PATH, DB_PATH, skipped_analysis_rows)
         write_skipped_to_csv(skipped_analysis_rows, "/Volumes/Masoumeh/Masoumeh/Masoumeh_data/1-Rfa1/confocal/skipped_analysis_rows.csv")
 
-    write_skipped_to_csv(skipped_rows, "/Volumes/Masoumeh/Masoumeh/Masoumeh_data/1-Rfa1/confocal/skipped_rows.csv")
+    write_skipped_to_csv(skipped_rows, "/Users/masoomeshafiee/Desktop/Presentation/skipped_rows.csv")
     logging.info("Data insertion process completed.")
 
