@@ -209,6 +209,10 @@ def validate_manifest_df(df: pd.DataFrame) -> List[str]:
 
     return issues
 
+
+# -----------------------------
+# Data classes for metadata
+# -----------------------------
 @dataclass
 class GlobalDefaults:
     user_name: str
@@ -243,7 +247,7 @@ class ExperimentMetadata:
     is_valid: bool
     comment: Optional[str]
 
-    experiment_root: str
+    experiment_path: str
 
 @dataclass
 class TypeDefaults:
@@ -388,7 +392,9 @@ st.markdown('<p style="font-size:16px;">Scan a folder and any subfolders, classi
 with st.expander("Supported file extensions", expanded=False):
     st.write(", ".join(sorted(SUPPORTED_EXTS)))
 
+# ------------------------------------
 # --- Step 1: Select folder ---
+# ------------------------------------
 st.header("1) Select experiment folder ")
 folder_path = st.text_input(
     "Experiment folder path (local or mounted drive)",
@@ -417,7 +423,9 @@ if df.empty:
 
 st.success(f"Found {len(df)} file(s) under: {root_str}")
 
+# ----------------------------------------------
 # --- Step 2: Classification rules ---
+# ----------------------------------------------
 st.header("2) Classify files in bulk")
 
 colA, colB = st.columns(2)
@@ -453,8 +461,9 @@ with colB:
 
 st.divider()
 
-
+# --------------------------------------------
 # --- Step 3: Per-file overrides ---
+# --------------------------------------------
 st.header("3) Review & override (only if needed)")
 st.markdown(
     '<p style="font-size:16px;">Edit <b>data_type</b>. Use <b>Advanced</b> only if you need per-file overrides '
@@ -553,8 +562,9 @@ for col in (["data_type"] + override_cols):
 
 st.divider()
 
-
+# ----------------------------------------------
 # --- Step 4: Metadata defaults & scope ---
+# ----------------------------------------------
 
 st.header("4) Optional Metadata Defaults (Can be modified later in the workflow)")
 
@@ -700,7 +710,7 @@ if scope == "Experiment-level metadata":
 
             "is_valid": bool(is_valid),
             "comment": _none_if_blank(comment),
-            "experiment_root": str(root_str) if root_str else "",
+            "experiment_path": str(root_str) if root_str else "",
         }
         # Only store override fields if toggle enabled AND value differs from global
         if enable_override:
@@ -759,7 +769,7 @@ if scope == "Per-type defaults":
             submitted_mask = st.form_submit_button("Save mask defaults")
 
         if submitted_mask:
-            segmentation_params_json_obj = "not uploaded"
+            segmentation_params_json_obj = None
             if uploaded is not None:
                 try:
                     segmentation_params_json_obj = json.loads(uploaded.read().decode("utf-8"))
@@ -789,7 +799,7 @@ if scope == "Per-type defaults":
             submitted_tracking = st.form_submit_button("Save tracking defaults")
 
         if submitted_tracking:
-            trackmate_json_obj = "not uploaded"
+            trackmate_json_obj = None
             if uploaded is not None:
                 try:
                     trackmate_json_obj = json.loads(uploaded.read().decode("utf-8"))
@@ -808,39 +818,29 @@ if scope == "Per-type defaults":
 
 st.divider()
 
+# ---------------------------------------------
 # --- Step 5: Validate + export manifest ---
+# ---------------------------------------------
+
 st.header("5) Validate & export manifest")
 
-issues = validate_manifest_df(df)
-if issues:
-    st.error("Fix these before exporting:")
-    for x in issues:
-        st.write(f"- {x}")
-else:
-    st.success("All files are assigned (or ignored). Ready to export.")
+issues = validate_manifest_df(df)  # your existing "assignment" checks
 
 defaults_global = st.session_state.get("defaults_global", {})
 meta_experiment = st.session_state.get("meta_experiment", {})
 defaults_by_type = st.session_state.get("defaults_by_type", {})
 
-if not defaults_global:
-    st.warning("Global defaults not set (optional, but recommended).")
 if not meta_experiment:
-    st.warning("Experiment-level metadata not set (required for a useful manifest).")
-if not defaults_by_type:
-    st.info("Per-role defaults not set (optional).")
+    st.warning("Experiment-level metadata not set (required).")
 
-can_export = (not issues) and bool(meta_experiment)
+can_build_manifest = (not issues) and bool(meta_experiment)
 
-col1, col2 = st.columns(2)
-with col1:
-    st.subheader("Summary")
-    st.write(df["data_type"].value_counts(dropna=False))
-with col2:
-    st.subheader("Preview (first 50)")
-    st.dataframe(df.head(50), use_container_width=True, hide_index=True)
+manifest = None
+exp_issues = []
+file_issues = []
+invalid_files_df = pd.DataFrame()
 
-if can_export:
+if can_build_manifest:
     manifest = build_manifest(
         global_defaults=defaults_global,
         experiment_meta=meta_experiment,
@@ -848,8 +848,57 @@ if can_export:
         df=df,
     )
 
-    manifest_json = json.dumps(manifest, indent=2)
+    from data_validation import validate_manifest  # or paste the function above here
 
+    exp_issues, file_issues = validate_manifest(
+        manifest,
+        allowed_capture_types=set(CAPTURE_TYPES),
+        allowed_organisms=set(ALLOWED_ORGANISMS),
+        dye_units=set(DYE_CONCENTRATION_UNITS),
+        condition_units=set(CONDITION_UNITS),
+        mask_types=set(MASK_TYPES),
+        supported_exts=set([e.lower() for e in SUPPORTED_EXTS]),
+        require_path_exists=True,   # set False if paths may not exist on server
+    )
+
+    if file_issues:
+        invalid_files_df = pd.DataFrame([{
+            "file_name": x["file_name"],
+            "data_type": x["data_type"],
+            "path": x["path"],
+            "issues": "; ".join(x["issues"]),
+        } for x in file_issues])
+
+# --- Show assignment-level issues first ---
+if issues:
+    st.error("Fix these file classification issues:")
+    for x in issues:
+        st.write(f"- {x}")
+else:
+    st.success("File classification looks good.")
+
+# --- Show experiment-level blockers ---
+if exp_issues:
+    st.error("Experiment-level validation failed (must fix before export/insert):")
+    for x in exp_issues:
+        st.write(f"- {x}")
+else:
+    if can_build_manifest:
+        st.success("Experiment-level metadata validated.")
+
+# --- Show file-level invalids (skippable) ---
+if can_build_manifest and (not exp_issues) and (not invalid_files_df.empty):
+    with st.expander(f"File rows with validation issues ({len(invalid_files_df)})"):
+        st.dataframe(invalid_files_df, use_container_width=True, hide_index=True)
+
+# Export allowed if:
+# - classification ok
+# - experiment metadata ok
+# - experiment-level validation ok
+can_export = bool(manifest) and (not issues) and (not exp_issues)
+
+if can_export:
+    manifest_json = json.dumps(manifest, indent=2)
     st.download_button(
         "Download resolved manifest.json",
         data=manifest_json,
@@ -858,7 +907,6 @@ if can_export:
         type="primary",
     )
 
-    # CSV export of resolved file rows (flattened)
     resolved_df = pd.json_normalize(manifest["files_resolved"])
     st.download_button(
         "Download resolved_files.csv",
@@ -866,3 +914,148 @@ if can_export:
         file_name="experiment_files_resolved.csv",
         mime="text/csv",
     )
+
+# col1, col2 = st.columns(2)
+# with col1:
+#     st.subheader("Summary")
+#     st.write(df["data_type"].value_counts(dropna=False))
+# with col2:
+#     st.subheader("Preview (first 50)")s
+#     st.dataframe(df.head(50), use_container_width=True, hide_index=True)
+
+    
+# -----------------------------------------------------
+# ------ Step 6) Insert into database --------
+# -----------------------------------------------------
+
+st.header("6) Insert into database (optional)")
+
+# --- DB path ---
+DB_PATH = st.secrets.get("DB_PATH", "")
+
+db_path_input = st.text_input(
+    "SQLite DB path",
+    value=DB_PATH,
+    placeholder="/path/to/your.db",
+    help="Path to the SQLite database file on the machine running Streamlit.",
+)
+
+# ------------- Select insertion mode -----------------
+# “Strict (skip duplicates)”
+# “Upsert (update duplicates)” (later)
+
+st.write("Insertion mode:")
+insertion_mode = st.selectbox(
+    "Choose how to handle duplicates (files that already exist in the DB based on their path):",
+    options=["Strict (skip duplicates)"],  # for now we only implement strict mode; upsert will come later
+    help="Strict mode will skip inserting files that have the same values in the unique constraint fields (e.g., path)"
+    " and report them in the output. Upsert mode will update existing records with new metadata from the manifest. Choose strict mode for a safer first run; upsert will be available in a future update.",
+)
+
+
+# --- Choose manifest source: current session vs upload ---
+use_current_manifest = st.checkbox("Use current session manifest (recommended)", value=True)
+
+uploaded_manifest = None
+if not use_current_manifest:
+    uploaded_manifest = st.file_uploader(
+        "Upload an experiment_manifest_resolved.json",
+        type=["json"],
+        help="Use this if you exported a manifest earlier and want to insert it now.",
+    )
+
+# ------ Prepare manifest to insert------
+manifest_to_insert = None
+if use_current_manifest:
+    # We already created `manifest` above when can_export is True.
+    # If not, we can rebuild it safely here (requires can_export).
+    if can_export:
+        manifest_to_insert = manifest
+        st.success("Ready to insert using the current session manifest.")
+    else:
+        st.warning("Finish Step 5 (set experiment metadata + resolve issues) to generate a valid manifest.")
+else:
+    if uploaded_manifest is not None:
+        try:
+            manifest_to_insert = json.loads(uploaded_manifest.read().decode("utf-8"))
+            st.success("Manifest uploaded and parsed successfully.")
+        except Exception as e:
+            st.error(f"Could not parse uploaded manifest JSON: {e}")
+            st.stop()
+    else:
+        st.info("Upload a manifest to enable insertion.")
+
+
+# --- Insert button ---
+insert_disabled = (not db_path_input.strip()) or (manifest_to_insert is None)
+
+
+if st.button("Insert into DB", type="primary", disabled=insert_disabled):
+    try:
+        # Import here to avoid page import-time errors if module path changes
+        from insert import insert_manifest 
+
+        report = insert_manifest(manifest_to_insert, db_path_input.strip())
+
+        st.session_state["last_insert_report"] = report
+        st.success(f"DB insertion completed successfuly. Report: {report}")
+
+    except Exception as e:
+        st.error(f"DB insertion failed: {e}")
+        st.stop()
+
+# --- Display report if available ---
+
+report = st.session_state.get("last_insert_report")
+
+if report:
+    st.subheader("Insertion summary")
+
+    # Counts table
+    inserted_counts = report.get("inserted_counts", {}) or {}
+    if inserted_counts:
+        counts_df = pd.DataFrame([inserted_counts])
+        st.dataframe(counts_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("No inserted_counts returned by insert module. This may indicate an issue with the insert function or that it did not return a report in the expected format.")
+
+    # Skipped rows expander
+    skipped = report.get("skipped", []) or []
+    if skipped:
+        with st.expander(f"Skipped rows ({len(skipped)})"):
+            rows = []
+            for s in skipped:
+                ctx = s.get("context", {}) or {}
+                rows.append(
+                    {
+                        "file_name": ctx.get("file_name"),
+                        "data_type": ctx.get("data_type"),
+                        "reason": s.get("reason"),
+                        "existing_id": s.get("existing_id"),
+                        "table": s.get("table"),
+                        "path": ctx.get("path"),
+                    }
+                )
+                skipped_df = pd.DataFrame(rows)
+            st.dataframe(skipped_df, use_container_width=True, hide_index=True)
+
+            # Download skipped rows CSV
+            st.download_button(
+                "Download skipped rows (CSV)",
+                data=skipped_df.to_csv(index=False),
+                file_name="db_skipped_rows.csv",
+                mime="text/csv",
+            )
+    else:
+        st.caption("No skipped rows reported.")
+
+    # Download full report JSON
+    report_json = json.dumps(report, indent=2, default=str)
+    st.download_button(
+        "Download insert report (JSON)",
+        data=report_json,
+        file_name="db_insert_report.json",
+        mime="application/json",
+    )
+
+
