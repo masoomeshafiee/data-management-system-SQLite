@@ -5,6 +5,43 @@ from typing import Any, Dict, List, Tuple, Optional
 
 EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 
+
+ALLOWED_NA = {"NA", "N/A"}  # global set
+
+REQUIRED_FIELDS = {
+    "raw": ["file_name", "file_type", "date", "replicate", "organism", "protein", "strain", "condition", "capture_type"],
+    "tracking": ["file_name", "file_type", "threshold"],
+    "mask": ["file_name", "mask_type", "file_type", "segmentation_method"],
+    "analysis_file": ["file_name", "file_type"]
+}
+
+# Allowed extensions
+SUPPORTED_EXTS = {".tif", ".tiff", ".TIF", ".csv", ".nd", ".npy", ".png", ".txt", ".json", ".mat", ".pickle", ".svg", ".pdf", ".xlsx"}
+
+# Allowed capture types
+CAPTURE_TYPES = {"confocal", "fast", "long"}
+
+# Allowed organisms
+ALLOWED_ORGANISMS = {"human", "yeast", "E.coli"}
+
+# Allowed mask types
+MASK_TYPES = {"cell", "nucleus", "nucleus-g1", "membrane", "cytoplasm"}
+
+# Allowed dye concentration units
+DYE_CONCENTRATION_UNITS = {"pM","nM", "uM", "mM", "M", "N/A"}
+
+# Allowed condition units
+CONDITION_UNITS = {"nM", "uM", "mM", "M", "%", "mJ/m2", "mJ/cm2", "J/cm2", "J/m2", "N/A"}
+
+# numeric fields per category
+NUMERIC_FIELDS = {
+    "raw": ["concentration_value", "exposure_time", "time_interval", "dye_concentration_value", "camera_binning", "pixel_size"],
+    "tracking": ["threshold", "gap_closing_distance", "linking_distance", "max_frame_gap"],
+    "mask": [],
+    "analysis_file": []
+}
+
+
 def _is_number(x: Any) -> bool:
     if x in ("", None):
         return True
@@ -25,6 +62,12 @@ def validate_manifest(
     supported_exts: set,
     require_path_exists: bool = True,
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
+    
+    """
+    Returns:
+      exp_issues: list[str]  -> BLOCKERS
+      file_issues: list[dict] -> SKIPPABLE (if allow_partial_files=True)
+    """
     exp = manifest.get("experiment") or {}
     g = manifest.get("global_defaults") or {}
     files = manifest.get("files_resolved") or []
@@ -88,12 +131,12 @@ def validate_manifest(
         if k in exp and exp[k] not in ("", None) and not _is_number(exp[k]):
             exp_issues.append(f"Experiment: '{k}' must be numeric (got '{exp[k]}').")
 
-    for k in ["camera_binning", "replicate"]:
-        if k in exp and exp[k] not in ("", None):
-            try:
-                int(exp[k])
-            except Exception:
-                exp_issues.append(f"Experiment: '{k}' must be integer (got '{exp[k]}').")
+    if exp.get("camera_binning") not in ("", None):
+        try:
+            int(exp["camera_binning"])
+        except Exception:
+            exp_issues.append(f"Experiment: camera_binning must be integer (got '{exp.get('camera_binning')}').")
+
 
     # -------------------
     # File-level (skippable)
