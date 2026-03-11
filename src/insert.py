@@ -6,6 +6,8 @@ import csv
 import os
 import re
 from pathlib import Path
+from data_validation_v2 import validate_manifest
+import data_validation_v2 # for allowed values sets
 
 logger = logging.getLogger(__name__)
 
@@ -166,15 +168,135 @@ def insert_or_skip(
         "unique_fields": unique_fields,
         "context": context,
     }
+
+def insert_update_or_skip(
+    cur: sqlite3.Cursor,
+    *,
+    table: str,
+    identity_fields: Dict[str, Any],   # defines "same record"
+    insert_fields: Dict[str, Any],
+    update_fields: Dict[str, Any],     # what you allow to change
+    context: Dict[str, Any],
+    reason_prefix: str,
+    duplicate_mode: str,  # "strict" | "upsert"
+) -> Dict[str, Any]:
+    where_sql, where_vals = _build_where(identity_fields)
+    cur.execute(f"SELECT id FROM {table} WHERE {where_sql}", where_vals)
+    row = cur.fetchone()
+
+    if row:
+        existing_id = int(row[0])
+        if duplicate_mode == "strict":
+            return {
+                "status": "skipped",
+                "reason": f"{reason_prefix}: duplicate",
+                "existing_id": existing_id,
+                "table": table,
+                "unique_fields": identity_fields,
+                "context": context,
+            }
+
+        # upsert => UPDATE
+        if update_fields:
+            set_clause = ", ".join([f"{k} = ?" for k in update_fields.keys()])
+            cur.execute(
+                f"UPDATE {table} SET {set_clause} WHERE id = ?",
+                list(update_fields.values()) + [existing_id],
+            )
+        return {
+            "status": "updated",
+            "reason": f"{reason_prefix}: updated existing row",
+            "existing_id": existing_id,
+            "table": table,
+            "unique_fields": identity_fields,
+            "context": context,
+        }
+
+    # INSERT
+    cols = ", ".join(insert_fields.keys())
+    placeholders = ", ".join(["?"] * len(insert_fields))
+    cur.execute(f"INSERT INTO {table} ({cols}) VALUES ({placeholders})", list(insert_fields.values()))
+    return {
+        "status": "inserted",
+        "new_id": int(cur.lastrowid),
+        "table": table,
+        "context": context,
+    }
     
 # -----------------------
 # Main: manifest insertion
 # -----------------------
-def insert_manifest(manifest: Dict[str, Any], db_path: str) -> Dict[str, Any]:
+def insert_manifest(manifest: Dict[str, Any], db_path: str, *, allow_partial_files: bool = True,
+    require_path_exists: bool = True, duplicate_mode: str = "strict") -> Dict[str, Any]:
     """
     Inserts a single manifest into the DB.
-    Returns: experiment_id
+    Returns a report dict (always).
     """
+    if duplicate_mode not in ("strict", "upsert"):
+        raise ValueError("duplicate_mode must be 'strict' or 'upsert'")
+    
+    # ---- Validate (ALWAYS) ----
+    exp_issues, file_issues = validate_manifest(
+        manifest,
+        allowed_capture_types=data_validation_v2.CAPTURE_TYPES,
+        allowed_organisms=data_validation_v2.ALLOWED_ORGANISMS,
+        dye_units=data_validation_v2.DYE_CONCENTRATION_UNITS,
+        condition_units=data_validation_v2.CONDITION_UNITS,
+        mask_types=data_validation_v2.MASK_TYPES,
+        supported_exts=data_validation_v2.SUPPORTED_EXTS,
+        require_path_exists=require_path_exists,
+    )
+
+    report = {
+        "status": "ok",
+        "mode": duplicate_mode,
+        "experiment_id": None,
+        "counts": {"inserted": {"raw": 0, "tracking": 0, "mask": 0, "analysis": 0},
+               "updated":  {"raw": 0, "tracking": 0, "mask": 0, "analysis": 0}},
+        "skipped": [],
+        "validation": {
+            "experiment_issues": exp_issues,
+            "file_issue_count": len(file_issues),
+        },
+    }
+
+    # Block on experiment-level issues
+    if exp_issues:
+        report["status"] = "failed_validation"
+        return report
+
+    # If not allowing partial files, block if any file invalid
+    if (not allow_partial_files) and file_issues:
+        report["status"] = "failed_validation"
+        # include file issues as skipped for visibility
+        for x in file_issues:
+            report["skipped"].append({
+                "status": "skipped",
+                "reason": "validation_failed: " + "; ".join(x["issues"]),
+                "existing_id": None,
+                "table": None,
+                "unique_fields": None,
+                "context": {"data_type": x["data_type"], "file_name": x["file_name"], "path": x["path"]},
+            })
+        return report
+
+    # Build set of invalid file indices to skip during insertion
+    invalid_paths = {x.get("path") for x in file_issues if x.get("path")}
+
+    # Add invalid files to skipped report now (so user sees them)
+    for x in file_issues:
+        report["skipped"].append({
+            "status": "skipped",
+            "reason": "validation_failed: " + "; ".join(x["issues"]),
+            "existing_id": None,
+            "table": None,
+            "unique_fields": None,
+            "context": {"data_type": x["data_type"], "file_name": x["file_name"], "path": x["path"]},
+        })
+
+
+    # ---- Proceed with DB insertion (valid files only) ----
+
     exp = manifest.get("experiment") or {}
     g = manifest.get("global_defaults") or {}
     files = manifest.get("files_resolved") or []
@@ -204,7 +326,7 @@ def insert_manifest(manifest: Dict[str, Any], db_path: str) -> Dict[str, Any]:
         })
 
         user_id = get_or_create_id(cur, "User", {
-            "name": norm_text(g.get("user_name")),
+            "user_name": norm_text(g.get("user_name")),
             "last_name": norm_text(g.get("user_last_name")),
             "email": norm_text(g.get("user_email")),
         })
@@ -258,40 +380,44 @@ def insert_manifest(manifest: Dict[str, Any], db_path: str) -> Dict[str, Any]:
             cur.execute(f"INSERT INTO Experiment ({cols}) VALUES ({placeholders})", list(insert_fields.values()))
             experiment_id = int(cur.lastrowid)
 
-        report = {
-            "experiment_id": experiment_id,
-            "inserted_counts": {"raw": 0, "tracking": 0, "mask": 0, "analysis": 0},
-            "skipped": [],
-        }
+        report["experiment_id"] = experiment_id
 
         # ---- files ----
         for f in files:
+            if f.get("path") in invalid_paths:
+                continue  # skip invalid files based on validation results
             dt = f.get("data_type")
             if dt == "raw":
-                outcome = _insert_raw(cur, experiment_id, f)
+                outcome = _insert_raw(cur, experiment_id, f, duplicate_mode)
             elif dt == "tracking":
-                outcome = _insert_tracking(cur, experiment_id, f)
+                outcome = _insert_tracking(cur, experiment_id, f, duplicate_mode)
             elif dt == "mask":
-                outcome = _insert_mask(cur, experiment_id, f)
+                outcome = _insert_mask(cur, experiment_id, f, duplicate_mode)
             elif dt in ("analysis", "batch_analysis", "plot", "config"):
-                outcome = _insert_analysis(cur, experiment_id, f)
+                outcome = _insert_analysis(cur, experiment_id, f, duplicate_mode)
             else:
                 # ignore/unassigned should not appear here; we filtered ignore already
                 continue
             bucket = "analysis" if dt in ("analysis","batch_analysis","plot","config") else dt
-            if outcome["status"] == "inserted":
-                report["inserted_counts"][bucket] += 1
-                logger.info(f"Inserted {bucket} file: {outcome['context']}")
 
+            if outcome["status"] == "inserted":
+                report["counts"]["inserted"][bucket] += 1
+                logger.info(f"Inserted {bucket} file: {outcome['context']}")
+            elif outcome["status"] == "updated":
+                report["counts"]["updated"][bucket] += 1
+                logger.info(f"Updated existing {bucket} file: {outcome['context']}")
             else:
                 report["skipped"].append(outcome)
                 logger.info(f"Skipped {bucket} file due to duplicate: {outcome['context']}")
 
         conn.commit()
         logger.info("data was succussfully inserted to the db.")
+        report["status"] = "ok"
         return report
-    except Exception:
+    except Exception as e:
         conn.rollback()
+        report["status"] = "failed_exception"
+        report["error"] = str(e)
         raise
     finally:
         conn.close()
@@ -300,76 +426,108 @@ def insert_manifest(manifest: Dict[str, Any], db_path: str) -> Dict[str, Any]:
 # -----------------------
 # Table-specific inserts
 # -----------------------
-def _insert_raw(cur: sqlite3.Cursor, experiment_id: int, f: Dict[str, Any]) -> Dict[str, Any]:
-
+def _insert_raw(cur: sqlite3.Cursor, experiment_id: int, f: Dict[str, Any], duplicate_mode: str) -> Dict[str, Any]:
     unique_fields = {
-        "experiment_id": experiment_id,
-        "file_name": norm_text(f.get("file_name")),
-        "file_path": norm_text(f.get("path")),  # handle NULL as discussed
-    }
+    "experiment_id": experiment_id,
+    "file_path": norm_text(f.get("path")),
+}
     insert_fields = {
         **unique_fields,
+        "file_name": norm_text(f.get("file_name")),
+        "file_type": norm_text(f.get("ext")),  # handle NULL as discussed
+    }
+    update_fields = {
+        "file_name": norm_text(f.get("file_name")),
         "file_type": norm_text(f.get("ext")),
     }
-    return insert_or_skip(
+    # return insert_or_skip(
+    #     cur,
+    #     table="RawFiles",
+    #     unique_fields=unique_fields,
+    #     insert_fields=insert_fields,
+    #     context={"data_type": "raw", "file_name": f.get("file_name"), "path": f.get("path")},
+    #     reason_prefix="RawFiles",
+    # )
+    return insert_update_or_skip(
         cur,
         table="RawFiles",
-        unique_fields=unique_fields,
+        identity_fields=unique_fields,
         insert_fields=insert_fields,
+        update_fields=update_fields,
         context={"data_type": "raw", "file_name": f.get("file_name"), "path": f.get("path")},
         reason_prefix="RawFiles",
+        duplicate_mode=duplicate_mode,
     )
 
 
-def _insert_tracking(cur: sqlite3.Cursor, experiment_id: int, f: Dict[str, Any]) -> Dict[str, Any]:
+def _insert_tracking(cur: sqlite3.Cursor, experiment_id: int, f: Dict[str, Any], duplicate_mode: str) -> Dict[str, Any]:
     trackmate_params = f.get("trackmate_settings_json") or {}
     unique_fields = {
         "experiment_id": experiment_id,
+        "file_path": f.get("path"),
+        
+    }
+    insert_fields = {
+        **unique_fields,
         "file_name": norm_text(f.get("file_name")),
+        "file_type": norm_text(f.get("ext")),
         "threshold": f.get("threshold"),
         "linking_distance": f.get("linking_distance"),
         "gap_closing_distance": f.get("gap_closing_distance"),
         "max_frame_gap": f.get("max_frame_gap"),
-    }
-    insert_fields = {
-        **unique_fields,
-        "file_type": norm_text(f.get("ext")),
-        "file_path": f.get("path"),
         "trackmate_settings_json": norm_text(json.dumps(trackmate_params)) if isinstance(trackmate_params, dict) else trackmate_params,
     }
-    return insert_or_skip(
+    update_fields = {
+        "file_name": norm_text(f.get("file_name")),
+        "file_type": norm_text(f.get("ext")),
+        "threshold": f.get("threshold"),
+        "linking_distance": f.get("linking_distance"),
+        "gap_closing_distance": f.get("gap_closing_distance"),
+        "max_frame_gap": f.get("max_frame_gap"),
+        "trackmate_settings_json": norm_text(json.dumps(trackmate_params)) if isinstance(trackmate_params, dict) else trackmate_params,
+    }
+    return insert_update_or_skip(
         cur,
         table="TrackingFiles",
-        unique_fields=unique_fields,
+        identity_fields=unique_fields,
         insert_fields=insert_fields,
+        update_fields=update_fields,
         context={"data_type": "tracking", "file_name": f.get("file_name"), "path": f.get("path")},
         reason_prefix="TrackingFiles",
+        duplicate_mode=duplicate_mode,
     )
 
-def _insert_mask(cur: sqlite3.Cursor, experiment_id: int, f: Dict[str, Any]) -> Dict[str, Any]:
+def _insert_mask(cur: sqlite3.Cursor, experiment_id: int, f: Dict[str, Any], duplicate_mode: str) -> Dict[str, Any]:
     seg_params = f.get("segmentation_parameters") or {}
     unique_fields = {
         "experiment_id": experiment_id,
-        "mask_name": norm_text(f.get("file_name")),
+        "file_name": norm_text(f.get("file_name")),
         "segmentation_method": norm_text(f.get("segmentation_method")),
     }
     insert_fields = {
         **unique_fields,
         "mask_type": norm_text(f.get("mask_type")),
-        "mask_path": norm_text(f.get("path")),
+        "file_path": norm_text(f.get("path")),
+        "segmentation_parameters": norm_text(json.dumps(seg_params)) if isinstance(seg_params, dict) else seg_params,
+    }
+    update_fields = {
+        "mask_type": norm_text(f.get("mask_type")),
+        "file_path": norm_text(f.get("path")),
         "segmentation_parameters": norm_text(json.dumps(seg_params)) if isinstance(seg_params, dict) else seg_params,
     }
 
-    return insert_or_skip(
+    return insert_update_or_skip(
         cur,
         table="Masks",
-        unique_fields=unique_fields,
+        identity_fields=unique_fields,
         insert_fields=insert_fields,
+        update_fields=update_fields,
         context={"data_type": "mask", "file_name": f.get("file_name"), "path": f.get("path")},
         reason_prefix="Masks",
+        duplicate_mode=duplicate_mode,
     )
 
-def _insert_analysis(cur: sqlite3.Cursor, experiment_id: int, f: Dict[str, Any]) -> Dict[str, Any]:
+def _insert_analysis(cur: sqlite3.Cursor, experiment_id: int, f: Dict[str, Any], duplicate_mode: str) -> Dict[str, Any]:
     # depends on whether AnalysisFiles is global + link table, or has experiment_id directly
     # Here I assume you have a link table like before.
 
@@ -383,15 +541,21 @@ def _insert_analysis(cur: sqlite3.Cursor, experiment_id: int, f: Dict[str, Any])
         "file_type": norm_text(f.get("ext")),
     }
 
+    update_fields = {
+        "file_type": norm_text(f.get("ext")),
+    }
+
     
     
-    result = insert_or_skip(
+    result = insert_update_or_skip(
         cur,
         table="AnalysisFiles",
-        unique_fields=unique_fields,
+        identity_fields=unique_fields,
         insert_fields=insert_fields,
+        update_fields=update_fields,
         context={"data_type": "analysis", "file_name": f.get("file_name"), "path": f.get("path")},
         reason_prefix="AnalysisFiles",
+        duplicate_mode=duplicate_mode,
     )
 
     
