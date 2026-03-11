@@ -282,200 +282,201 @@ ALTER TABLE TrackingFiles_new RENAME TO TrackingFiles;
 # Create the tables. 
 # --------------------------------
 
-tables = [
-    "RawFiles", "TrackingFiles", "Masks", "AnalysisFiles",
-    "AnalysisResults", "ExperimentAnalysisFiles", "AnalysisResultExperiments",
-    "Experiment", "CaptureSetting", "StrainOrCellLine",
-    "Protein", "Condition", "Organism", "User"
-]
+# tables = [
+#     "RawFiles", "TrackingFiles", "Masks", "AnalysisFiles",
+#     "AnalysisResults", "ExperimentAnalysisFiles", "AnalysisResultExperiments",
+#     "Experiment", "CaptureSetting", "StrainOrCellLine",
+#     "Protein", "Condition", "Organism", "User"
+# ]
 
-for table in tables:
-    c.execute(f"DROP TABLE IF EXISTS {table};")
+# for table in tables:
+#     c.execute(f"DROP TABLE IF EXISTS {table};")
 
-c.executescript("""
-    PRAGMA foreign_keys = ON;
+# c.executescript("""
+#     PRAGMA foreign_keys = ON;
                             
-CREATE TABLE IF NOT EXISTS Organism (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        organism_name TEXT NOT NULL UNIQUE COLLATE NOCASE
-                CHECK (trim(organism_name) <> '')
-    );
-CREATE TABLE StrainOrCellLine (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    strain_name TEXT COLLATE NOCASE UNIQUE NOT NULL
-    CHECK (trim(strain_name) <> '')
-);
-CREATE TABLE Protein (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    protein_name TEXT COLLATE NOCASE NOT NULL
-                CHECK (trim(protein_name) <> '')
-);
+# CREATE TABLE IF NOT EXISTS Organism (
+#         id INTEGER PRIMARY KEY AUTOINCREMENT,
+#         organism_name TEXT NOT NULL UNIQUE COLLATE NOCASE
+#                 CHECK (trim(organism_name) <> '')
+#     );
+# CREATE TABLE StrainOrCellLine (
+#     id INTEGER PRIMARY KEY AUTOINCREMENT,
+#     strain_name TEXT COLLATE NOCASE UNIQUE NOT NULL
+#     CHECK (trim(strain_name) <> '')
+# );
+# CREATE TABLE Protein (
+#     id INTEGER PRIMARY KEY AUTOINCREMENT,
+#     protein_name TEXT COLLATE NOCASE NOT NULL
+#                 CHECK (trim(protein_name) <> '')
+# );
                 
 
-CREATE TABLE Condition (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        condition_name TEXT NOT NULL COLLATE NOCASE CHECK (trim(condition_name) <> ''),
-        concentration_value FLOAT CHECK (concentration_value >= 0),
-        concentration_unit TEXT COLLATE NOCASE 
-    );
-CREATE TABLE CaptureSetting (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        capture_type TEXT NOT NULL COLLATE NOCASE CHECK (trim(capture_type) <> ''),
-        exposure_time FLOAT NOT NULL CHECK (exposure_time > 0),
-        time_interval FLOAT NOT NULL CHECK (time_interval > 0),
-        fluorescent_dye TEXT COLLATE NOCASE NOT NULL CHECK (trim(fluorescent_dye) <> ''),
-        dye_concentration_value FLOAT NOT NULL CHECK (dye_concentration_value > 0),
-        dye_concentration_unit TEXT COLLATE NOCASE CHECK (dye_concentration_unit IS NULL OR trim(dye_concentration_unit) <> ''),
-        laser_wavelength FLOAT CHECK (laser_wavelength > 0),
-        laser_intensity FLOAT NOT NULL CHECK (laser_intensity > 0),
-        camera_binning INTEGER CHECK (camera_binning IS NULL OR camera_binning > 0),
-        objective_magnification FLOAT CHECK (objective_magnification IS NULL or objective_magnification > 0),
-        pixel_size FLOAT CHECK (pixel_size IS NULL or pixel_size > 0)
+# CREATE TABLE Condition (
+#         id INTEGER PRIMARY KEY AUTOINCREMENT,
+#         condition_name TEXT NOT NULL COLLATE NOCASE CHECK (trim(condition_name) <> ''),
+#         concentration_value FLOAT CHECK (concentration_value >= 0),
+#         concentration_unit TEXT COLLATE NOCASE 
+#     );
+# CREATE TABLE CaptureSetting (
+#         id INTEGER PRIMARY KEY AUTOINCREMENT,
+#         capture_type TEXT NOT NULL COLLATE NOCASE CHECK (trim(capture_type) <> ''),
+#         exposure_time FLOAT NOT NULL CHECK (exposure_time > 0),
+#         time_interval FLOAT NOT NULL CHECK (time_interval > 0),
+#         fluorescent_dye TEXT COLLATE NOCASE NOT NULL CHECK (trim(fluorescent_dye) <> ''),
+#         dye_concentration_value FLOAT NOT NULL CHECK (dye_concentration_value > 0),
+#         dye_concentration_unit TEXT COLLATE NOCASE CHECK (dye_concentration_unit IS NULL OR trim(dye_concentration_unit) <> ''),
+#         laser_wavelength FLOAT CHECK (laser_wavelength > 0),
+#         laser_intensity FLOAT NOT NULL CHECK (laser_intensity > 0),
+#         camera_binning INTEGER CHECK (camera_binning IS NULL OR camera_binning > 0),
+#         objective_magnification FLOAT CHECK (objective_magnification IS NULL or objective_magnification > 0),
+#         pixel_size FLOAT CHECK (pixel_size IS NULL or pixel_size > 0)
 
-    );
-CREATE TABLE User (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_name TEXT NOT NULL COLLATE NOCASE CHECK (trim(user_name) <> ''),
-        last_name TEXT COLLATE NOCASE CHECK (trim(last_name) <> ''),
-        email TEXT UNIQUE COLLATE NOCASE CHECK (trim(email) <> '')
-    );
+#     );
+# CREATE TABLE User (
+#         id INTEGER PRIMARY KEY AUTOINCREMENT,
+#         user_name TEXT NOT NULL COLLATE NOCASE CHECK (trim(user_name) <> ''),
+#         last_name TEXT COLLATE NOCASE CHECK (trim(last_name) <> ''),
+#         email TEXT UNIQUE COLLATE NOCASE CHECK (trim(email) <> '')
+#     );
 
-CREATE TABLE Experiment (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        organism_id INTEGER NOT NULL,
-        protein_id INTEGER NOT NULL,
-        strain_id INTEGER NOT NULL,
-        condition_id INTEGER NOT NULL,
-        capture_setting_id INTEGER NOT NULL,
-        user_id INTEGER NOT NULL,
-        date TEXT NOT NULL CHECK (trim(date) <> ''),
-        replicate INTEGER NOT NULL CHECK (replicate >= 1),
-        is_valid BOOLEAN NOT NULL CHECK (is_valid IN (0, 1)),
-        comment TEXT,
-        experiment_path TEXT NOT NULL COLLATE NOCASE,
-        FOREIGN KEY (organism_id) REFERENCES Organism(id),
-        FOREIGN KEY (protein_id) REFERENCES Protein(id),
-        FOREIGN KEY (strain_id) REFERENCES StrainOrCellLine(id),
-        FOREIGN KEY (condition_id) REFERENCES Condition(id),
-        FOREIGN KEY (capture_setting_id) REFERENCES CaptureSetting(id),
-        FOREIGN KEY (user_id) REFERENCES User(id)
-    );
-CREATE TABLE RawFiles (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        experiment_id INTEGER NOT NULL,
-        file_name TEXT NOT NULL COLLATE NOCASE CHECK (trim(file_name) <> ''),
-        file_type TEXT COLLATE NOCASE,
-        file_path TEXT NOT NULL COLLATE NOCASE CHECK (trim(file_path) <> ''),
-        FOREIGN KEY (experiment_id) REFERENCES Experiment(id) ON DELETE CASCADE
-    );
-CREATE TABLE TrackingFiles (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        experiment_id INTEGER NOT NULL,
-        file_name TEXT NOT NULL COLLATE NOCASE CHECK (trim(file_name) <> ''),
-        file_type TEXT COLLATE NOCASE,
-        file_path TEXT NOT NULL COLLATE NOCASE CHECK (trim(file_path) <> ''),
-        threshold FLOAT CHECK (threshold > 0),
-        linking_distance FLOAT CHECK (linking_distance > 0),
-        gap_closing_distance FLOAT CHECK (gap_closing_distance > 0),
-        max_frame_gap INTEGER CHECK (max_frame_gap >= 0),
-        trackmate_settings_json TEXT,
-        FOREIGN KEY (experiment_id) REFERENCES Experiment(id) ON DELETE CASCADE
+# CREATE TABLE Experiment (
+#         id INTEGER PRIMARY KEY AUTOINCREMENT,
+#         organism_id INTEGER NOT NULL,
+#         protein_id INTEGER NOT NULL,
+#         strain_id INTEGER NOT NULL,
+#         condition_id INTEGER NOT NULL,
+#         capture_setting_id INTEGER NOT NULL,
+#         user_id INTEGER NOT NULL,
+#         date TEXT NOT NULL CHECK (trim(date) <> ''),
+#         replicate INTEGER NOT NULL CHECK (replicate >= 1),
+#         is_valid BOOLEAN NOT NULL CHECK (is_valid IN (0, 1)),
+#         comment TEXT,
+#         experiment_path TEXT NOT NULL COLLATE NOCASE,
+#         FOREIGN KEY (organism_id) REFERENCES Organism(id),
+#         FOREIGN KEY (protein_id) REFERENCES Protein(id),
+#         FOREIGN KEY (strain_id) REFERENCES StrainOrCellLine(id),
+#         FOREIGN KEY (condition_id) REFERENCES Condition(id),
+#         FOREIGN KEY (capture_setting_id) REFERENCES CaptureSetting(id),
+#         FOREIGN KEY (user_id) REFERENCES User(id)
+#     );
+# CREATE TABLE RawFiles (
+#         id INTEGER PRIMARY KEY AUTOINCREMENT,
+#         experiment_id INTEGER NOT NULL,
+#         file_name TEXT NOT NULL COLLATE NOCASE CHECK (trim(file_name) <> ''),
+#         file_type TEXT COLLATE NOCASE,
+#         file_path TEXT NOT NULL COLLATE NOCASE CHECK (trim(file_path) <> ''),
+#         FOREIGN KEY (experiment_id) REFERENCES Experiment(id) ON DELETE CASCADE
+#     );
+# CREATE TABLE TrackingFiles (
+#         id INTEGER PRIMARY KEY AUTOINCREMENT,
+#         experiment_id INTEGER NOT NULL,
+#         file_name TEXT NOT NULL COLLATE NOCASE CHECK (trim(file_name) <> ''),
+#         file_type TEXT COLLATE NOCASE,
+#         file_path TEXT NOT NULL COLLATE NOCASE CHECK (trim(file_path) <> ''),
+#         threshold FLOAT CHECK (threshold > 0),
+#         linking_distance FLOAT CHECK (linking_distance > 0),
+#         gap_closing_distance FLOAT CHECK (gap_closing_distance > 0),
+#         max_frame_gap INTEGER CHECK (max_frame_gap >= 0),
+#         trackmate_settings_json TEXT,
+#         FOREIGN KEY (experiment_id) REFERENCES Experiment(id) ON DELETE CASCADE
         
-    );
+#     );
 
 
-CREATE TABLE Masks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        experiment_id INTEGER NOT NULL,
-        mask_name TEXT NOT NULL COLLATE NOCASE CHECK (trim(mask_name) <> ''),
-        mask_type TEXT COLLATE NOCASE CHECK (trim(mask_type) <> ''),
-        file_type TEXT COLLATE NOCASE,
-        mask_path TEXT NOT NULL COLLATE NOCASE CHECK (trim(mask_path) <> ''),
-        segmentation_method TEXT COLLATE NOCASE CHECK (trim(segmentation_method) <> ''),
-        segmentation_parameters TEXT COLLATE NOCASE,
-        FOREIGN KEY (experiment_id) REFERENCES Experiment(id) ON DELETE CASCADE
-    );
-CREATE TABLE AnalysisFiles (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        file_name TEXT NOT NULL COLLATE NOCASE CHECK (trim(file_name) <> ''),
-        file_path TEXT NOT NULL COLLATE NOCASE CHECK (trim(file_path) <> ''),
-        file_type TEXT COLLATE NOCASE
-    );
+# CREATE TABLE Masks (
+#         id INTEGER PRIMARY KEY AUTOINCREMENT,
+#         experiment_id INTEGER NOT NULL,
+#         mask_name TEXT NOT NULL COLLATE NOCASE CHECK (trim(mask_name) <> ''),
+#         mask_type TEXT COLLATE NOCASE CHECK (trim(mask_type) <> ''),
+#         file_type TEXT COLLATE NOCASE,
+#         mask_path TEXT NOT NULL COLLATE NOCASE CHECK (trim(mask_path) <> ''),
+#         segmentation_method TEXT COLLATE NOCASE CHECK (trim(segmentation_method) <> ''),
+#         segmentation_parameters TEXT COLLATE NOCASE,
+#         FOREIGN KEY (experiment_id) REFERENCES Experiment(id) ON DELETE CASCADE
+#     );
+# CREATE TABLE AnalysisFiles (
+#         id INTEGER PRIMARY KEY AUTOINCREMENT,
+#         file_name TEXT NOT NULL COLLATE NOCASE CHECK (trim(file_name) <> ''),
+#         file_path TEXT NOT NULL COLLATE NOCASE CHECK (trim(file_path) <> ''),
+#         file_type TEXT COLLATE NOCASE
+#     );
 
-CREATE TABLE Experiment_Analysis_Files_Link (
-        experiment_id INTEGER NOT NULL,
-        analysis_file_id INTEGER NOT NULL,
-        PRIMARY KEY(experiment_id, analysis_file_id),
-        FOREIGN KEY (experiment_id) REFERENCES Experiment(id) ON DELETE CASCADE,
-        FOREIGN KEY (analysis_file_id) REFERENCES AnalysisFiles(id) ON DELETE CASCADE
-    );
-CREATE TABLE Results (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        result_type TEXT COLLATE NOCASE NOT NULL CHECK (trim(result_type) <> ''),
-        result_value FLOAT NOT NULL,
-        sample_size INTEGER CHECK (sample_size IS NULL OR sample_size >= 1),
-        standard_error FLOAT CHECK (standard_error IS NULL OR standard_error >= 0),
-        analysis_method TEXT COLLATE NOCASE NOT NULL CHECK (trim(analysis_method) <> ''),
-        analysis_parameters_json TEXT
+# CREATE TABLE Experiment_Analysis_Files_Link (
+#         experiment_id INTEGER NOT NULL,
+#         analysis_file_id INTEGER NOT NULL,
+#         PRIMARY KEY(experiment_id, analysis_file_id),
+#         FOREIGN KEY (experiment_id) REFERENCES Experiment(id) ON DELETE CASCADE,
+#         FOREIGN KEY (analysis_file_id) REFERENCES AnalysisFiles(id) ON DELETE CASCADE
+#     );
+# CREATE TABLE Results (
+#         id INTEGER PRIMARY KEY AUTOINCREMENT,
+#         result_type TEXT COLLATE NOCASE NOT NULL CHECK (trim(result_type) <> ''),
+#         result_value FLOAT NOT NULL,
+#         sample_size INTEGER CHECK (sample_size IS NULL OR sample_size >= 1),
+#         standard_error FLOAT CHECK (standard_error IS NULL OR standard_error >= 0),
+#         analysis_method TEXT COLLATE NOCASE NOT NULL CHECK (trim(analysis_method) <> ''),
+#         analysis_parameters_json TEXT
         
-    );
-CREATE TABLE Result_Analysis_Files_Link (
-        result_id INTEGER NOT NULL,
-        analysis_file_id INTEGER NOT NULL,
-        PRIMARY KEY(result_id, analysis_file_id),
-        FOREIGN KEY (result_id) REFERENCES Results(id) ON DELETE CASCADE, 
-        FOREIGN KEY (analysis_file_id) REFERENCES AnalysisFiles(id) ON DELETE CASCADE
-    );
+#     );
+# CREATE TABLE Result_Analysis_Files_Link (
+#         result_id INTEGER NOT NULL,
+#         analysis_file_id INTEGER NOT NULL,
+#         PRIMARY KEY(result_id, analysis_file_id),
+#         FOREIGN KEY (result_id) REFERENCES Results(id) ON DELETE CASCADE, 
+#         FOREIGN KEY (analysis_file_id) REFERENCES AnalysisFiles(id) ON DELETE CASCADE
+#     );
 
--- =========================
--- Unique indexes (NULL-safe where needed)
--- =========================
-CREATE UNIQUE INDEX condition_identity
-ON Condition (
-    condition_name,
-    COALESCE(concentration_value, -1.0e308),
-    COALESCE(concentration_unit, '')
-);
+# -- =========================
+# -- Unique indexes (NULL-safe where needed)
+# -- =========================
+# CREATE UNIQUE INDEX condition_identity
+# ON Condition (
+#     condition_name,
+#     COALESCE(concentration_value, -1.0e308),
+#     COALESCE(concentration_unit, '')
+# );
 
-CREATE UNIQUE INDEX capture_setting_identity
-ON CaptureSetting (
-    capture_type,
-    COALESCE(exposure_time, -1.0e308),
-    COALESCE(time_interval, -1.0e308),
-    COALESCE(fluorescent_dye, ''),
-    COALESCE(dye_concentration_value, -1.0e308),
-    COALESCE(laser_intensity, -1.0e308)
-);
-CREATE UNIQUE INDEX experiment_identity
-    ON Experiment (
-        COALESCE(organism_id, -1),
-        COALESCE(protein_id, -1),
-        COALESCE(strain_id, -1),
-        COALESCE(condition_id, -1),
-        COALESCE(capture_setting_id, -1),
-        COALESCE(date, ''),
-        COALESCE(replicate, -1)
-    );
+# CREATE UNIQUE INDEX capture_setting_identity
+# ON CaptureSetting (
+#     capture_type,
+#     COALESCE(exposure_time, -1.0e308),
+#     COALESCE(time_interval, -1.0e308),
+#     COALESCE(fluorescent_dye, ''),
+#     COALESCE(dye_concentration_value, -1.0e308),
+#     COALESCE(laser_intensity, -1.0e308)
+# );
+# CREATE UNIQUE INDEX experiment_identity
+#     ON Experiment (
+#         COALESCE(organism_id, -1),
+#         COALESCE(protein_id, -1),
+#         COALESCE(strain_id, -1),
+#         COALESCE(condition_id, -1),
+#         COALESCE(capture_setting_id, -1),
+#         COALESCE(date, ''),
+#         COALESCE(replicate, -1)
+#     );
 
-CREATE UNIQUE INDEX rawfiles_identity
-ON RawFiles (experiment_id, file_name, file_path);
+# CREATE UNIQUE INDEX rawfiles_identity
+# ON RawFiles (experiment_id, file_name, file_path);
 
-CREATE UNIQUE INDEX trackingfiles_identity
-ON TrackingFiles (experiment_id, file_name, file_path, threshold, linking_distance, gap_closing_distance, max_frame_gap);
+# CREATE UNIQUE INDEX trackingfiles_identity
+# ON TrackingFiles (experiment_id, file_name, file_path, threshold, linking_distance, gap_closing_distance, max_frame_gap);
 
-CREATE UNIQUE INDEX masks_identity
-ON Masks (experiment_id, mask_name, mask_path);
+# CREATE UNIQUE INDEX masks_identity
+# ON Masks (experiment_id, mask_name, mask_path);
 
-CREATE UNIQUE INDEX analysisfiles_identity
-ON AnalysisFiles (file_name, file_path, file_type);
+# CREATE UNIQUE INDEX analysisfiles_identity
+# ON AnalysisFiles (file_name, file_path, file_type);
            
-CREATE UNIQUE INDEX results_identity
-ON Results (result_type, result_value, analysis_method);
+# CREATE UNIQUE INDEX results_identity
+# ON Results (result_type, result_value, analysis_method);
 
             
     
-""")
+# """)
 
+c.execute("ALTER TABLE CaptureSetting ADD COLUMN pixel_size_unit TEXT COLLATE NOCASE CHECK (trim(pixel_size_unit) <> '');")
 conn.commit()
 conn.close()
 print("Migration to v2.0 completed successfully. All tables are recreated with proper constraints.")
