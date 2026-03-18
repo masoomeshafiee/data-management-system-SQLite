@@ -28,7 +28,7 @@ ALLOWED_ORGANISMS = {"human", "yeast", "E.coli"}
 MASK_TYPES = {"cell", "nucleus", "nucleus-g1", "membrane", "cytoplasm"}
 
 # Allowed dye concentration units
-DYE_CONCENTRATION_UNITS = {"pM","nM", "uM", "mM", "M", "N/A"}
+#DYE_CONCENTRATION_UNITS = {"pM","nM", "uM", "mM", "M", "N/A"} it is not used anymore to control the unit.
 
 # Allowed condition units
 CONDITION_UNITS = {"nM", "uM", "mM", "M", "%", "mJ/m2", "mJ/cm2", "J/cm2", "J/m2", "N/A"}
@@ -116,10 +116,6 @@ def validate_manifest(
         exp_issues.append(f"Global defaults: invalid user_email '{email}'.")
 
     # Units sanity (only if values provided)
-    if exp.get("dye_concentration_unit"):
-        u = str(exp.get("dye_concentration_unit")).strip()
-        if u and u not in dye_units:
-            exp_issues.append(f"Experiment: dye_concentration_unit '{u}' not in {sorted(dye_units)}.")
     if exp.get("concentration_unit"):
         u = str(exp.get("concentration_unit")).strip()
         if u and u not in condition_units:

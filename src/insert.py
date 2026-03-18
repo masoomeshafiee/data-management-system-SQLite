@@ -82,7 +82,7 @@ def get_or_create_id(
     # alternative way: 
     # where = " AND ".join([f"{c} IS ?" if v is None else f"{c} = ?" for c, v in zip(cols, vals)])
     # cur.execute(f"SELECT id FROM {table} WHERE {where}", vals)
-
+    #love you level 1
     where_parts = []
     values = []
 
@@ -240,7 +240,6 @@ def insert_manifest(manifest: Dict[str, Any], db_path: str, *, allow_partial_fil
         manifest,
         allowed_capture_types=data_validation_v2.CAPTURE_TYPES,
         allowed_organisms=data_validation_v2.ALLOWED_ORGANISMS,
-        dye_units=data_validation_v2.DYE_CONCENTRATION_UNITS,
         condition_units=data_validation_v2.CONDITION_UNITS,
         mask_types=data_validation_v2.MASK_TYPES,
         supported_exts=data_validation_v2.SUPPORTED_EXTS,
@@ -339,7 +338,6 @@ def insert_manifest(manifest: Dict[str, Any], db_path: str, *, allow_partial_fil
 
             "fluorescent_dye": norm_text(exp.get("fluorescent_dye") or g.get("fluorescent_dye")),
             "dye_concentration_value": norm_float(exp.get("dye_concentration_value") or g.get("dye_concentration_value")),
-            "dye_concentration_unit": norm_text(exp.get("dye_concentration_unit") or g.get("dye_concentration_unit")),
             "laser_wavelength": norm_float(exp.get("laser_wavelength") or g.get("laser_wavelength")),
             "laser_intensity": norm_float(exp.get("laser_intensity") or g.get("laser_intensity")),
             "camera_binning": norm_int(exp.get("camera_binning") or g.get("camera_binning")),
@@ -564,7 +562,7 @@ def _insert_analysis(cur: sqlite3.Cursor, experiment_id: int, f: Dict[str, Any],
         # Insert into link table
         analysis_file_id = cur.execute("SELECT last_insert_rowid()").fetchone()[0]
         cur.execute(
-            "INSERT INTO ExperimentAnalysisFiles (experiment_id, analysis_file_id) VALUES (?, ?)",
+            "INSERT INTO Experiment_Analysis_Files_Link (experiment_id, analysis_file_id) VALUES (?, ?)",
             (experiment_id, analysis_file_id)
         )
         result["linked_analysis_file_id"] = analysis_file_id
@@ -573,12 +571,12 @@ def _insert_analysis(cur: sqlite3.Cursor, experiment_id: int, f: Dict[str, Any],
         # If it already exists, we need to ensure the link exists (idempotent)
         analysis_file_id = result["existing_id"]
         cur.execute(
-            "SELECT 1 FROM ExperimentAnalysisFiles WHERE experiment_id = ? AND analysis_file_id = ?",
+            "SELECT 1 FROM Experiment_Analysis_Files_Link WHERE experiment_id = ? AND analysis_file_id = ?",
             (experiment_id, analysis_file_id)
         )
         if not cur.fetchone():
             cur.execute(
-                "INSERT INTO ExperimentAnalysisFiles (experiment_id, analysis_file_id) VALUES (?, ?)",
+                "INSERT INTO Experiment_Analysis_Files_Link (experiment_id, analysis_file_id) VALUES (?, ?)",
                 (experiment_id, analysis_file_id)
             )
         result["linked_analysis_file_id"] = analysis_file_id

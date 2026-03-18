@@ -22,7 +22,6 @@ SUPPORTED_EXTS = {".csv", ".tif", ".tiff",".TIF", ".nd", ".npy", ".png", ".txt",
 CAPTURE_TYPES = ["confocal", "fast", "long"]
 ALLOWED_ORGANISMS = ["human", "yeast", "E.coli"]
 MASK_TYPES = ["cell", "nucleus", "nucleus-g1", "membrane", "cytoplasm"]
-DYE_CONCENTRATION_UNITS = ["pM","nM", "uM", "mM", "M", "N/A"]
 CONDITION_UNITS = ["N/A","nM", "uM", "mM", "M", "%", "mJ/m2", "mJ/cm2", "J/cm2", "J/m2"]
 ROLE_OPTIONS = ["unassigned", "raw", "mask", "tracking", "analysis", "batch_analysis", "plot", "config", "ignore"]
 
@@ -63,7 +62,7 @@ def safe_stat(p: Path) -> Tuple[Optional[int], Optional[float]]:
     except Exception:
         return None, None
 
-
+# this is not used anymore as we removed the field of view column from the db schema. 
 def extract_field_of_view(file_name: str) -> str:
     """
     Optional. Best-effort only.
@@ -130,7 +129,6 @@ def scan_experiment_folder(root_folder: Path) -> pd.DataFrame:
             {
                 "relative_folder": "." if rel_folder == "" else rel_folder,
                 "file_name": p.name,
-                "field_of_view": extract_field_of_view(p.name),
                 "ext": ext,
                 "full_path": str(p),
                 "size_mb": None if size_bytes is None else round(size_bytes / (1024 * 1024), 3),
@@ -223,7 +221,6 @@ class GlobalDefaults:
     user_email: str
     fluorescent_dye: str
     dye_concentration_value: Optional[float]
-    dye_concentration_unit: str
     objective_magnification: Optional[float]
     laser_wavelength: Optional[float]
     laser_intensity: Optional[float]
@@ -306,7 +303,6 @@ def resolve_file_metadata(
             "file_name": file_row["file_name"],
             "ext": file_row["ext"],
             "data_type": dt,
-            "field_of_view": _none_if_blank(file_row.get("field_of_view", "")),
         }
     )
     # raw file overrides:
@@ -352,7 +348,6 @@ def build_manifest(*,
                 "path": r["full_path"],
                 "relative_folder": r["relative_folder"],
                 "file_name": r["file_name"],
-                "field_of_view": _none_if_blank(r.get("field_of_view", "")),
                 "ext": r["ext"],
                 "data_type": r["data_type"],
                 "overrides": {
@@ -503,7 +498,7 @@ st.markdown(f"Number of records found based on the filtering criteria: `{len(vie
 
 
 # Base columns always visible/editable
-base_cols = ["relative_folder", "file_name", "field_of_view", "ext", "data_type", "full_path"]
+base_cols = ["relative_folder", "file_name", "ext", "data_type", "full_path"]
 
 # Override columns depend on filter + advanced toggle
 tracking_override_cols = ["ov_threshold", "ov_linking_distance", "ov_gap_closing_distance", "ov_max_frame_gap"]
@@ -532,7 +527,7 @@ edited_df = st.data_editor(
     view_df[cols_to_show],
     use_container_width=True,
     hide_index=True,
-    disabled=["relative_folder", "file_name", "field_of_view", "ext", "full_path"],
+    disabled=["relative_folder", "file_name", "ext", "full_path"],
     column_config={
         "data_type": st.column_config.SelectboxColumn("data_type", options=ROLE_OPTIONS),
         # You can optionally add column configs for numeric fields:
@@ -593,16 +588,15 @@ if scope == "Global defaults":
 
         with c2:
             fluorescent_dye = st.text_input("fluorescent_dye")
-            dye_concentration_value = st.number_input("dye_concentration_value", value=0.0, step=0.1)
-            dye_concentration_unit = st.selectbox("dye_concentration_unit", DYE_CONCENTRATION_UNITS, index=DYE_CONCENTRATION_UNITS.index("nM") if "nM" in DYE_CONCENTRATION_UNITS else 0)
+            dye_concentration_value = st.number_input("dye_concentration_value (nM)", value=0.0, step=0.1)
             
 
         with c3:
-            objective_magnification = st.number_input("objective_magnification", value=0.0, step=1.0)
-            laser_wavelength = st.number_input("laser_wavelength", value=0.0, step=1.0)
-            laser_intensity = st.number_input("laser_intensity", value=0.0, step=1.0)
+            objective_magnification = st.number_input("objective_magnification (ex. 100)", value=0.0, step=1.0)
+            laser_wavelength = st.number_input("laser_wavelength (nm)", value=0.0, step=1.0)
+            laser_intensity = st.number_input("laser_intensity (%)", value=0.0, step=1.0)
             camera_binning = st.number_input("camera_binning", value=1, step=1)
-            pixel_size = st.number_input("pixel_size", value=0.0, step=0.01)
+            pixel_size = st.number_input("pixel_size (microns)", value=0.0, step=0.01)
 
         submitted = st.form_submit_button("Save global metadata defaults")
         if submitted:
@@ -612,7 +606,6 @@ if scope == "Global defaults":
                 "user_email": _clean_str(user_email),
                 "fluorescent_dye": _clean_str(fluorescent_dye),
                 "dye_concentration_value": _none_if_zero_float(float(dye_concentration_value)),
-                "dye_concentration_unit": _clean_str(dye_concentration_unit),
                 "objective_magnification": _none_if_zero_float(float(objective_magnification)),
                 "laser_wavelength": _none_if_zero_float(float(laser_wavelength)),
                 "laser_intensity": _none_if_zero_float(float(laser_intensity)),
@@ -627,7 +620,6 @@ if scope == "Experiment-level metadata":
     # Prefill from global defaults (but we will store only overrides if toggle enabled)
     g_fluo = g.get("fluorescent_dye", "")
     g_dye_val = g.get("dye_concentration_value", 0.0) or 0.0
-    g_dye_unit = g.get("dye_concentration_unit", "")
     g_obj = g.get("objective_magnification", 0.0) or 0.0
     g_wl = g.get("laser_wavelength", 0.0) or 0.0
     g_int = g.get("laser_intensity", 0.0) or 0.0
@@ -681,14 +673,13 @@ if scope == "Experiment-level metadata":
             enable_override = st.checkbox("Enable override for this experiment", value=False)
 
             fluorescent_dye = st.text_input("fluorescent_dye", value=g_fluo)
-            dye_concentration_value = st.number_input("dye_concentration_value", value=float(g_dye_val), step=0.1)
-            dye_concentration_unit = st.text_input("dye_concentration_unit", value=g_dye_unit)
+            dye_concentration_value = st.number_input("dye_concentration_value (nM)", value=float(g_dye_val), step=0.1)
 
             objective_magnification = st.number_input("objective_magnification (ex.:100)", value=float(g_obj), step=1.0)
-            laser_wavelength = st.number_input("laser_wavelength", value=float(g_wl), step=1.0)
-            laser_intensity = st.number_input("laser_intensity", value=float(g_int), step=1.0)
+            laser_wavelength = st.number_input("laser_wavelength (nm)", value=float(g_wl), step=1.0)
+            laser_intensity = st.number_input("laser_intensity (%)", value=float(g_int), step=1.0)
             camera_binning = st.number_input("camera_binning", value=int(g_bin), step=1)
-            pixel_size = st.number_input("pixel_size", value=float(g_px), step=0.01)
+            pixel_size = st.number_input("pixel_size (microns)", value=float(g_px), step=0.01)
 
         comment = st.text_area("comment (optional)", height=80)
 
@@ -734,7 +725,6 @@ if scope == "Experiment-level metadata":
 
             maybe_set_override("fluorescent_dye", _clean_str(fluorescent_dye), g_fluo)
             maybe_set_override("dye_concentration_value", _none_if_zero_float(float(dye_concentration_value)), g.get("dye_concentration_value"))
-            maybe_set_override("dye_concentration_unit", _clean_str(dye_concentration_unit), g_dye_unit)
             maybe_set_override("objective_magnification", _none_if_zero_float(float(objective_magnification)), g.get("objective_magnification"))
             maybe_set_override("laser_wavelength", _none_if_zero_float(float(laser_wavelength)), g.get("laser_wavelength"))
             maybe_set_override("laser_intensity", _none_if_zero_float(float(laser_intensity)), g.get("laser_intensity"))
@@ -792,8 +782,8 @@ if scope == "Per-type defaults":
         with st.form("tracking_defaults_form", clear_on_submit=False):
 
             threshold = st.number_input("threshold", value=0.0, step=1.0)
-            linking_distance = st.number_input("linking_distance", value=0.0, step=1.0)
-            gap_closing_distance = st.number_input("gap_closing_distance", value=0.0, step=1.0)
+            linking_distance = st.number_input("linking_distance (pixels)", value=0.0, step=1.0)
+            gap_closing_distance = st.number_input("gap_closing_distance (pixels)", value=0.0, step=1.0)
             max_frame_gap = st.number_input("max_frame_gap", value=-1, step=1)
 
             st.markdown("**Optional: Upload TrackMate settings JSON**")
@@ -866,7 +856,6 @@ if can_build_manifest:
         manifest,
         allowed_capture_types=CAPTURE_TYPES,
         allowed_organisms=ALLOWED_ORGANISMS,
-        dye_units=DYE_CONCENTRATION_UNITS,
         condition_units=CONDITION_UNITS,
         mask_types=MASK_TYPES,
         supported_exts=SUPPORTED_EXTS,
