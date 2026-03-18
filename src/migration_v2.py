@@ -476,7 +476,9 @@ ALTER TABLE TrackingFiles_new RENAME TO TrackingFiles;
     
 # """)
 
-c.execute("ALTER TABLE CaptureSetting ADD COLUMN pixel_size_unit TEXT COLLATE NOCASE CHECK (trim(pixel_size_unit) <> '');")
+#c.execute("ALTER TABLE CaptureSetting ADD COLUMN pixel_size_unit TEXT COLLATE NOCASE CHECK (trim(pixel_size_unit) <> '');")
+
+c.execute("ALTER TABLE CaptureSetting DROP COLUMN dye_concentration_unit;")
 conn.commit()
 conn.close()
 print("Migration to v2.0 completed successfully. All tables are recreated with proper constraints.")
