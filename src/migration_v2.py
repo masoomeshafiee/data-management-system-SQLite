@@ -478,9 +478,38 @@ ALTER TABLE TrackingFiles_new RENAME TO TrackingFiles;
 
 #c.execute("ALTER TABLE CaptureSetting ADD COLUMN pixel_size_unit TEXT COLLATE NOCASE CHECK (trim(pixel_size_unit) <> '');")
 
-c.execute("ALTER TABLE CaptureSetting DROP COLUMN dye_concentration_unit;")
+
+c.executescript(
+            """CREATE TABLE IF NOT EXISTS SavedSearch (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL COLLATE NOCASE,
+                target_table TEXT NOT NULL,
+                filters_json TEXT NOT NULL,
+                selected_filters_json TEXT,
+                selected_columns_json TEXT NOT NULL,
+                result_limit INTEGER NOT NULL DEFAULT 200,
+                created_by_user_id INTEGER NOT NULL,
+                is_shared INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (created_by_user_id) REFERENCES User(id)
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_savedsearch_name_user
+            ON SavedSearch(name, created_by_user_id);
+
+            CREATE INDEX IF NOT EXISTS ix_savedsearch_user
+            ON SavedSearch(created_by_user_id);
+
+            CREATE INDEX IF NOT EXISTS ix_savedsearch_target
+            ON SavedSearch(target_table);
+
+            """
+        )
+        
 conn.commit()
 conn.close()
+print("SavedSearch migration completed successfully.")
 print("Migration to v2.0 completed successfully. All tables are recreated with proper constraints.")
 
 
