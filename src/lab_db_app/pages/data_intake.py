@@ -14,35 +14,8 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 import streamlit as st
 
+from config import load_config, SUPPORTED_EXTS, FOLDER_HINTS, ROLE_OPTIONS, CAPTURE_TYPES, ALLOWED_ORGANISMS, MASK_TYPES, CONDITION_UNITS
 
-# ----------------------------
-# Config / constants
-# ----------------------------
-SUPPORTED_EXTS = {".csv", ".tif", ".tiff",".TIF", ".nd", ".npy", ".png", ".txt", ".json", ".mat", ".pickle", ".svg", ".pdf", ".xlsx"}
-CAPTURE_TYPES = ["confocal", "fast", "long"]
-ALLOWED_ORGANISMS = ["human", "yeast", "E.coli"]
-MASK_TYPES = ["cell", "nucleus", "nucleus-g1", "membrane", "cytoplasm"]
-CONDITION_UNITS = ["N/A","nM", "uM", "mM", "M", "%", "mJ/m2", "mJ/cm2", "J/cm2", "J/m2"]
-ROLE_OPTIONS = ["unassigned", "raw", "mask", "tracking", "analysis", "batch_analysis", "plot", "config", "ignore"]
-
-
-# Optional folder-name hints (NOT required)
-FOLDER_HINTS = {
-    "mask": "mask",
-    "masks": "mask",
-    "seg": "mask",
-    "segmentation": "mask",
-    "track": "tracking",
-    "tracks": "tracking",
-    "spot": "tracking",
-    "spots": "tracking",
-    "analysis": "analysis",
-    "results": "analysis",
-    "raw": "raw",
-    "video": "raw",
-    "images": "raw",
-    "projection": "raw"
-}
 
 
 # ----------------------------
@@ -968,15 +941,9 @@ else:
 st.header("6) Insert into database (optional)")
 
 # --- DB path ---
-DB_PATH = st.secrets.get("DB_PATH", "")
 
-db_path_input = st.text_input(
-    "SQLite DB path",
-    value=DB_PATH,
-    placeholder="/path/to/your.db",
-    help="Path to the SQLite database file on the machine running Streamlit.",
-)
-
+cfg = load_config()
+db_path_input = cfg.get("db_path", "")
 # ------------- Select manifest source -----------------
 source = st.radio(
     "Manifest source",

@@ -3,44 +3,7 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Tuple, Optional
 
-EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
-
-
-ALLOWED_NA = {"NA", "N/A"}  # global set
-
-REQUIRED_FIELDS = {
-    "raw": ["file_name", "file_type", "date", "replicate", "organism", "protein", "strain", "condition", "capture_type"],
-    "tracking": ["file_name", "file_type", "threshold"],
-    "mask": ["file_name", "mask_type", "file_type", "segmentation_method"],
-    "analysis_file": ["file_name", "file_type"]
-}
-
-# Allowed extensions
-SUPPORTED_EXTS = {".tif", ".tiff", ".TIF", ".csv", ".nd", ".npy", ".png", ".txt", ".json", ".mat", ".pickle", ".svg", ".pdf", ".xlsx"}
-
-# Allowed capture types
-CAPTURE_TYPES = {"confocal", "fast", "long"}
-
-# Allowed organisms
-ALLOWED_ORGANISMS = {"human", "yeast", "E.coli"}
-
-# Allowed mask types
-MASK_TYPES = {"cell", "nucleus", "nucleus-g1", "membrane", "cytoplasm"}
-
-# Allowed dye concentration units
-#DYE_CONCENTRATION_UNITS = {"pM","nM", "uM", "mM", "M", "N/A"} it is not used anymore to control the unit.
-
-# Allowed condition units
-CONDITION_UNITS = {"nM", "uM", "mM", "M", "%", "mJ/m2", "mJ/cm2", "J/cm2", "J/m2", "N/A"}
-
-# numeric fields per category
-NUMERIC_FIELDS = {
-    "raw": ["concentration_value", "exposure_time", "time_interval", "dye_concentration_value", "camera_binning", "pixel_size"],
-    "tracking": ["threshold", "gap_closing_distance", "linking_distance", "max_frame_gap"],
-    "mask": [],
-    "analysis_file": []
-}
-
+from lab_db_app.config import  EMAIL_RE
 
 def _is_number(x: Any) -> bool:
     if x in ("", None):
@@ -56,7 +19,6 @@ def validate_manifest(
     *,
     allowed_capture_types: set,
     allowed_organisms: set,
-    dye_units: set,
     condition_units: set,
     mask_types: set,
     supported_exts: set,
