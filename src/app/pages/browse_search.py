@@ -2,15 +2,11 @@
 import sqlite3
 import streamlit as st
 import pandas as pd
-from config import load_config
+from config import load_config, FIELD_REGISTRY, TARGET_OPTIONS
 
-from queries_v2 import get_experiment_metadata
-from queries_v2 import (
-        FIELD_REGISTRY,
-        get_filterable_fields_for_target,
-        get_selectable_fields_for_target,
-        get_default_columns_for_target,
-        group_fields_by_section,
+from queries.queries_utils import get_filterable_fields_for_target, get_selectable_fields_for_target, get_default_columns_for_target, group_fields_by_section
+from queries.browse_queries import (
+        get_distinct_values,
         search_table,
         get_experiment_metadata,
         get_raw_files_for_experiment,
@@ -20,7 +16,7 @@ from queries_v2 import (
         get_results_for_experiment
     )
 
-from saved_searches import (
+from queries.save_searche import (
     list_saved_searches,
     get_saved_search_by_id,
     create_saved_search,
@@ -28,26 +24,120 @@ from saved_searches import (
     delete_saved_search,
 )
 
-from streamlit_app import page_header, require_user_selected, render_filter_widget_with_defaults, render_result_detail_ui
-from connection import get_connection
+from streamlit_app import page_header, require_user_selected
+from db.connection import get_connection
 
 
+# ======================================================
+# Helpers
+# ======================================================
 
-# -----------------------------
+def render_filter_widget_with_defaults(
+    conn: sqlite3.Connection,
+    filters: dict,
+    field,
+    default_value=None,
+    key_prefix: str = "",
+) -> dict:
+    label = field.output_label
+    key = f"{key_prefix}_filter_value_{field.alias}"
+
+    def init_state(default):
+        if key not in st.session_state and default not in (None, ""):
+            st.session_state[key] = default
+
+    # Special cases
+    if field.alias == "is_valid":
+        init_state(default_value if default_value is not None else "")
+        value = st.selectbox(label, options=["", "1", "0"], key=key)
+        if value != "":
+            filters[field.alias] = value
+        return filters
+
+    if field.data_type == "date":
+        init_state(default_value if default_value is not None else "")
+        value = st.text_input(label, key=key, placeholder="YYYY-MM-DD")
+        if value.strip():
+            filters[field.alias] = value.strip()
+        return filters
+
+    dropdown_fields = {
+        "organism", "protein", "strain", "condition",
+        "capture_type", "user_name", "email",
+        "raw_file_type", "tracking_file_type", "mask_type", "mask_file_type", "analysis_file_type",
+    }
+
+    if field.alias in dropdown_fields:
+        try:
+            values = get_distinct_values(conn, field.table, field.column)
+            init_state(default_value if default_value is not None else "")
+            value = st.selectbox(label, options=[""] + values, key=key)
+            if value != "":
+                filters[field.alias] = value
+        except Exception:
+            init_state(default_value if default_value is not None else "")
+            value = st.text_input(label, key=key)
+            if value.strip():
+                filters[field.alias] = value.strip()
+        return filters
+
+    if field.data_type == "int":
+        init_state(str(default_value) if default_value is not None else "")
+        value = st.text_input(label, key=key)
+        if value.strip():
+            try:
+                filters[field.alias] = int(value)
+            except ValueError:
+                st.warning(f"{label} must be an integer.")
+        return filters
+
+    if field.data_type == "float":
+        init_state(str(default_value) if default_value is not None else "")
+        value = st.text_input(label, key=key)
+        if value.strip():
+            try:
+                filters[field.alias] = float(value)
+            except ValueError:
+                st.warning(f"{label} must be numeric.")
+        return filters
+
+    init_state(default_value if default_value is not None else "")
+    value = st.text_input(label, key=key)
+    if value.strip():
+        filters[field.alias] = value.strip()
+    return filters
+
+
+def render_result_detail_ui(target_table: str, df: pd.DataFrame):
+    if target_table != "Experiment":
+        return
+
+    if "experiment_id" not in df.columns or df.empty:
+        return
+
+    experiment_ids = df["experiment_id"].dropna().tolist()
+    if not experiment_ids:
+        return
+
+    selected_experiment_id = st.selectbox(
+        "Open experiment details",
+        options=experiment_ids,
+        index=0,
+        key="experiment_detail_selectbox",
+    )
+
+    if st.button("Show experiment details", key="experiment_detail_button"):
+        st.session_state["selected_experiment_id"] = int(selected_experiment_id)
+        st.rerun()
+
+# ----------------------------------
+# Main function
+# ----------------------------------
 def page_browse(conn: sqlite3.Connection):
     
 
     page_header("Browse / Search", "Search experiments and related tables")
 
-    TARGET_OPTIONS = [
-        "Experiment",
-        "User",
-        "RawFiles",
-        "TrackingFiles",
-        "Masks",
-        "AnalysisFiles",
-        "AnalysisResults",
-    ]
 
     # -----------------------------
     # Target table

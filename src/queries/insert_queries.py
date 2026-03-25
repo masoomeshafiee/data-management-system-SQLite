@@ -6,8 +6,11 @@ import csv
 import os
 import re
 from pathlib import Path
-from data_validation_v2 import validate_manifest
-import data_validation_v2 # for allowed values sets
+from services.data_validation import validate_manifest
+
+from db.connection import get_conn
+from queries_utils import  build_where
+
 
 logger = logging.getLogger(__name__)
 
@@ -60,10 +63,6 @@ def json_text(x: Any) -> Optional[str]:
 # -----------------------
 # DB helpers
 # -----------------------
-def get_conn(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA foreign_keys = ON;")
-    return conn
 
 def get_or_create_id(
     cur: sqlite3.Cursor,
@@ -108,20 +107,6 @@ def get_or_create_id(
     logger.info(f"Inserted new value in the {table} table  with values: {unique_fields}")
     return int(cur.lastrowid)
 
-def _build_where(unique_fields: Dict[str, Any]) -> Tuple[str, List[Any]]:
-    """
-    Builds WHERE clause that correctly handles NULL comparisons.
-    """
-    parts = []
-    values = []
-    for k, v in unique_fields.items():
-        if v is None:
-            parts.append(f"{k} IS NULL")
-        else:
-            parts.append(f"{k} = ?")
-            values.append(v)
-    return " AND ".join(parts), values
-
 
 def insert_or_skip(
     cur: sqlite3.Cursor,
@@ -141,7 +126,7 @@ def insert_or_skip(
       - unique_fields
       - context (file info etc.)
     """
-    where_sql, where_vals = _build_where(unique_fields)
+    where_sql, where_vals = build_where(unique_fields)
     cur.execute(f"SELECT id FROM {table} WHERE {where_sql}", where_vals)
     row = cur.fetchone()
 
@@ -180,7 +165,7 @@ def insert_update_or_skip(
     reason_prefix: str,
     duplicate_mode: str,  # "strict" | "upsert"
 ) -> Dict[str, Any]:
-    where_sql, where_vals = _build_where(identity_fields)
+    where_sql, where_vals = build_where(identity_fields)
     cur.execute(f"SELECT id FROM {table} WHERE {where_sql}", where_vals)
     row = cur.fetchone()
 
@@ -238,11 +223,6 @@ def insert_manifest(manifest: Dict[str, Any], db_path: str, *, allow_partial_fil
     # ---- Validate (ALWAYS) ----
     exp_issues, file_issues = validate_manifest(
         manifest,
-        allowed_capture_types=data_validation_v2.CAPTURE_TYPES,
-        allowed_organisms=data_validation_v2.ALLOWED_ORGANISMS,
-        condition_units=data_validation_v2.CONDITION_UNITS,
-        mask_types=data_validation_v2.MASK_TYPES,
-        supported_exts=data_validation_v2.SUPPORTED_EXTS,
         require_path_exists=require_path_exists,
     )
 
@@ -360,7 +340,7 @@ def insert_manifest(manifest: Dict[str, Any], db_path: str, *, allow_partial_fil
         #where = " AND ".join([f"{k} IS ?" if v is None else f"{k} = ?" for k, v in experiment_lookup.items()])
         #cur.execute(f"SELECT id FROM Experiment WHERE {where}", list(experiment_lookup.values()))
         # second options is to build where with correct NULL handling:
-        where_sql, where_vals = _build_where(experiment_lookup)
+        where_sql, where_vals = build_where(experiment_lookup)
         cur.execute(f"SELECT id FROM Experiment WHERE {where_sql}", where_vals)
         row = cur.fetchone()
 
@@ -424,6 +404,23 @@ def insert_manifest(manifest: Dict[str, Any], db_path: str, *, allow_partial_fil
 # -----------------------
 # Table-specific inserts
 # -----------------------
+
+def create_user(conn: sqlite3.Connection, user_name: str, last_name: str | None, email: str | None) -> int:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO User (user_name, last_name, email)
+        VALUES (?, ?, ?)
+        """,
+        (
+            user_name.strip(),
+            last_name.strip() if last_name else None,
+            email.strip() if email else None,
+        ),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
 def _insert_raw(cur: sqlite3.Cursor, experiment_id: int, f: Dict[str, Any], duplicate_mode: str) -> Dict[str, Any]:
     unique_fields = {
     "experiment_id": experiment_id,
@@ -438,14 +435,7 @@ def _insert_raw(cur: sqlite3.Cursor, experiment_id: int, f: Dict[str, Any], dupl
         "file_name": norm_text(f.get("file_name")),
         "file_type": norm_text(f.get("ext")),
     }
-    # return insert_or_skip(
-    #     cur,
-    #     table="RawFiles",
-    #     unique_fields=unique_fields,
-    #     insert_fields=insert_fields,
-    #     context={"data_type": "raw", "file_name": f.get("file_name"), "path": f.get("path")},
-    #     reason_prefix="RawFiles",
-    # )
+
     return insert_update_or_skip(
         cur,
         table="RawFiles",

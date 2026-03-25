@@ -15,7 +15,8 @@ sys.path.append(str(Path(__file__).resolve().parents[2]))
 import streamlit as st
 
 from config import load_config, SUPPORTED_EXTS, FOLDER_HINTS, ROLE_OPTIONS, CAPTURE_TYPES, ALLOWED_ORGANISMS, MASK_TYPES, CONDITION_UNITS
-
+from queries.insert_queries import insert_manifest 
+from services.data_validation import validate_manifest
 
 
 # ----------------------------
@@ -35,29 +36,6 @@ def safe_stat(p: Path) -> Tuple[Optional[int], Optional[float]]:
     except Exception:
         return None, None
 
-# this is not used anymore as we removed the field of view column from the db schema. 
-def extract_field_of_view(file_name: str) -> str:
-    """
-    Optional. Best-effort only.
-    If no match, return empty string.
-    """
-    image_match = re.search(r"([0-9]+)_w.*\.(TIF|tif|png|npy)$", file_name)
-    if image_match:
-        return image_match.group(1)
-
-    nd_match = re.search(r"([0-9]+)\.nd$", file_name)
-    if nd_match:
-        return nd_match.group(1)
-
-    stream_match = re.search(r"Stream(\d+)", file_name, flags=re.IGNORECASE)
-    if stream_match:
-        return stream_match.group(1)
-
-    snap_match = re.search(r"Snap(\d+)", file_name, flags=re.IGNORECASE)
-    if snap_match:
-        return snap_match.group(1)
-
-    return ""
 
 def _clean_str(x: Any) -> str:
     return "" if x is None else str(x).strip()
@@ -238,11 +216,10 @@ class TypeDefaults:
 
 
 
-# ----------------------------
-# Resolution logic
-# Precedence:
-# Per-file overrides > Per-type defaults > Per-experiment overrides > Global defaults
-# ----------------------------
+# --------------------------------------------------------------------
+#  Metadata Resolution helpers
+# ----------------------------------------------------------------------
+
 def resolve_file_metadata(
     *,
     global_defaults: Dict[str, Any],
@@ -252,7 +229,7 @@ def resolve_file_metadata(
 ) -> Dict[str, Any]:
     """
     Precedence:
-    per-file overrides > per-type defaults > per-experiment > global
+    per-file overrides > per-type defaults > per-experiment overrides > Global defaults
     """
 
     dt = file_row["data_type"]
@@ -278,9 +255,8 @@ def resolve_file_metadata(
             "data_type": dt,
         }
     )
-    # raw file overrides:
-    # ------------------------------------------
-    # add later if needed 
+    # raw file overrides: # add later if needed 
+
     # ------------------------------------------
     # Tracking overrides
     if file_row.get("ov_threshold") is not None:
@@ -509,25 +485,7 @@ edited_df = st.data_editor(
     key="role_editor",
 )
 
-# Apply edits back to df.
-# Important: data_editor edits are relative to view_df indices, so we update by index.
-# Because view_df is a filtered view of df, indices must stay aligned with df indices.
-# This works because we didn't reset_index() on view_df.
-# if "role_editor" in st.session_state and isinstance(st.session_state["role_editor"], dict):
-#     edited = st.session_state["role_editor"].get("edited_rows", {})
-#     if edited:
-#         for idx_str, changes in edited.items():
-#             idx = int(idx_str)
 
-#             if "data_type" in changes:
-#                 df.loc[idx, "data_type"] = changes["data_type"]
-
-#             # Apply only visible override fields
-#             for k in override_cols:
-#                 if k in changes:
-#                     df.loc[idx, k] = changes[k]
-
-#         st.session_state["intake_df"] = df
 for col in (["data_type"] + override_cols):
     if col in edited_df.columns:
         df.loc[edited_df.index, col] = edited_df[col]
@@ -822,7 +780,7 @@ if can_build_manifest:
         df=df,
     )
 
-    from data_validation_v2 import validate_manifest
+    
     #import data_validation_v2 as dv
 
     exp_issues, file_issues = validate_manifest(
@@ -988,7 +946,6 @@ with colA:
     insert_disabled = (not db_path_input.strip()) or (manifest_candidate is None)
     if st.button("Insert into DB", type="primary", disabled=insert_disabled):
         try:
-            from insert import insert_manifest  # adjust import if needed
 
             report = insert_manifest(
                 manifest_candidate,

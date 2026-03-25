@@ -3,7 +3,7 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Tuple, Optional
 
-from lab_db_app.config import  EMAIL_RE
+from config import  EMAIL_RE, CONDITION_UNITS, CAPTURE_TYPES, ALLOWED_ORGANISMS, MASK_TYPES, SUPPORTED_EXTS
 
 def _is_number(x: Any) -> bool:
     if x in ("", None):
@@ -13,15 +13,10 @@ def _is_number(x: Any) -> bool:
         return True
     except Exception:
         return False
-
+    
 def validate_manifest(
     manifest: Dict[str, Any],
     *,
-    allowed_capture_types: set,
-    allowed_organisms: set,
-    condition_units: set,
-    mask_types: set,
-    supported_exts: set,
     require_path_exists: bool = True,
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
     
@@ -63,14 +58,14 @@ def validate_manifest(
     organism = (exp.get("organism") or "").strip()
     if not organism:
         exp_issues.append("Experiment: missing organism.")
-    elif organism not in allowed_organisms:
-        exp_issues.append(f"Experiment: organism '{organism}' not in allowed list: {sorted(allowed_organisms)}.")
+    elif organism not in CAPTURE_TYPES:
+        exp_issues.append(f"Experiment: organism '{organism}' not in allowed list: {sorted(ALLOWED_ORGANISMS)}.")
 
     capture_type = (exp.get("capture_type") or "").strip()
     if not capture_type:
         exp_issues.append("Experiment: missing capture_type.")
-    elif capture_type not in allowed_capture_types:
-        exp_issues.append(f"Experiment: capture_type '{capture_type}' must be one of {sorted(allowed_capture_types)}.")
+    elif capture_type not in CAPTURE_TYPES:
+        exp_issues.append(f"Experiment: capture_type '{capture_type}' must be one of {sorted(CAPTURE_TYPES)}.")
 
     # Email (optional but validate if present)
     email = (g.get("user_email") or "").strip()
@@ -80,8 +75,8 @@ def validate_manifest(
     # Units sanity (only if values provided)
     if exp.get("concentration_unit"):
         u = str(exp.get("concentration_unit")).strip()
-        if u and u not in condition_units:
-            exp_issues.append(f"Experiment: concentration_unit '{u}' not in {sorted(condition_units)}.")
+        if u and u not in CONDITION_UNITS:
+            exp_issues.append(f"Experiment: concentration_unit '{u}' not in {sorted(CONDITION_UNITS)}.")
 
     # numeric sanity (only if set)
     for k in ["exposure_time", "time_interval", "concentration_value", "dye_concentration_value",
@@ -113,7 +108,7 @@ def validate_manifest(
             issues.append("Missing file_name.")
         if not path:
             issues.append("Missing path.")
-        if ext and str(ext).lower() not in supported_exts:
+        if ext and str(ext).lower() not in SUPPORTED_EXTS:
             issues.append(f"Unsupported extension '{ext}'.")
 
         if require_path_exists and path and (not os.path.exists(path)):
@@ -138,8 +133,8 @@ def validate_manifest(
             mt = (f.get("mask_type") or "").strip()
             if not mt:
                 issues.append("Mask: missing mask_type.")
-            elif mt not in mask_types:
-                issues.append(f"Mask: mask_type '{mt}' not in allowed list: {sorted(mask_types)}.")
+            elif mt not in MASK_TYPES:
+                issues.append(f"Mask: mask_type '{mt}' not in allowed list: {sorted(MASK_TYPES)}.")
             sm = (f.get("segmentation_method") or "").strip()
             if not sm:
                 issues.append("Mask: missing segmentation_method.")

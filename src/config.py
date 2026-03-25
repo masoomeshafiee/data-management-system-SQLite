@@ -15,14 +15,14 @@ import re
 
 @dataclass
 class AppConfig:
-    app_name: str = "Reyes Lab Database App"
+    app_name: str = "Reyes Lab Data Manager"
     db_path: str = "app_database.db"
     debug_mode: bool = False    
     # Add other configuration parameters as needed
 
 def load_config() -> AppConfig:
     # Put your DB path in an env var on the lab PC
-    app_name = os.environ.get("DB_APP_NAME", "Reyes Lab Database App")
+    app_name = os.environ.get("DB_APP_NAME", "Reyes Lab Data Manager")
     db_path = os.environ.get("DB_PATH", st.secrets.get("DB_PATH", "../db/Reyes_lab_data.db"))
     debug_mode = os.environ.get("DB_APP_DEBUG_MODE", "False").lower() in ("true", "1", "t")
 
@@ -36,10 +36,10 @@ def load_config() -> AppConfig:
 # =========================================================
 
 SUPPORTED_EXTS = {".csv", ".tif", ".tiff",".TIF", ".nd", ".npy", ".png", ".txt", ".json", ".mat", ".pickle", ".svg", ".pdf", ".xlsx"}
-CAPTURE_TYPES = ["confocal", "fast", "long"]
-ALLOWED_ORGANISMS = ["human", "yeast", "E.coli"]
-MASK_TYPES = ["cell", "nucleus", "nucleus-g1", "membrane", "cytoplasm"]
-CONDITION_UNITS = ["N/A","nM", "uM", "mM", "M", "%", "mJ/m2", "mJ/cm2", "J/cm2", "J/m2"]
+CAPTURE_TYPES = {"confocal", "fast", "long"}
+ALLOWED_ORGANISMS = {"human", "yeast", "E.coli"}
+MASK_TYPES = {"cell", "nucleus", "nucleus-g1", "membrane", "cytoplasm"}
+CONDITION_UNITS = {"N/A","nM", "uM", "mM", "M", "%", "mJ/m2", "mJ/cm2", "J/cm2", "J/m2"}
 ROLE_OPTIONS = ["unassigned", "raw", "mask", "tracking", "analysis", "batch_analysis", "plot", "config", "ignore"]
 
 
@@ -192,6 +192,61 @@ FIELD_REGISTRY: Dict[str, FieldDef] = {
     "analysis_parameters_json": FieldDef("analysis_parameters", "Results", "analysis_parameters_json", section="results", applies_to=frozenset({"Results"})),
 }
 
+# =========================================================
+# Relationships / join graph
+# =========================================================
+
+TABLE_RELATIONSHIPS = {
+    "Experiment": {
+        "organism_id": "Organism",
+        "protein_id": "Protein",
+        "strain_id": "StrainOrCellLine",
+        "condition_id": "Condition",
+        "user_id": "User",
+        "capture_setting_id": "CaptureSetting",
+    },
+    "RawFiles": {"experiment_id": "Experiment"},
+    "TrackingFiles": {"experiment_id": "Experiment"},
+    "Masks": {"experiment_id": "Experiment"},
+    "Experiment_Analysis_Files_Link": {
+        "experiment_id": "Experiment",
+        "analysis_file_id": "AnalysisFiles",
+    },
+    "Results_Analysis_Files_Link": {
+        "result_id": "Results",
+        "analysis_file_id": "AnalysisFiles",
+    },
+}
+
+
+# =======================================================
+# Experiment browsing / search config
+# =======================================================
+BASE_EXPERIMENT_TABLES = {
+    "Experiment",
+    "Organism",
+    "Protein",
+    "StrainOrCellLine",
+    "Condition",
+    "CaptureSetting",
+    "User",
+}
+
+
+TARGET_OPTIONS = [
+        "Experiment",
+        "Condition",
+        "Organism",
+        "Protein",
+        "StrainOrCellLine",
+        "CaptureSetting",
+        "User",
+        "RawFiles",
+        "TrackingFiles",
+        "Masks",
+        "AnalysisFiles",
+        "Results",
+    ]
 
 BASE_EXPERIMENT_QUERY = """
 SELECT
