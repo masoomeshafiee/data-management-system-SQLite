@@ -9,7 +9,7 @@ from pathlib import Path
 from services.data_validation import validate_manifest
 
 from db.connection import get_conn
-from queries_utils import  build_where
+from queries.queries_utils import  build_where
 
 
 logger = logging.getLogger(__name__)

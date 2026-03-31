@@ -230,3 +230,27 @@ def execute_query(
     except Exception:
         logger.exception("Query failed")
         raise
+
+# =======================================================
+# Helper to check the existence of records matching filters, used by modules of specific groups of queries to skip the operation if no relevant experiments
+# example usage: skip QC checks if no experiments match the filters, as there's no point in running the checks if there are no relevant experiments
+# =======================================================
+def filtered_experiments_exist(
+    conn: sqlite3.Connection,
+    filters: Optional[Dict[str, Any]] = None,
+) -> bool:
+    where_clauses, params, joins = build_query_context(
+        main_table="Experiment",
+        filters=filters,
+        base_tables={"Experiment"},
+    )
+
+    query = "SELECT 1 FROM Experiment"
+    if joins:
+        query += " " + " ".join(joins)
+    if where_clauses:
+        query += " WHERE " + " AND ".join(where_clauses)
+    query += " LIMIT 1"
+
+    df = execute_query(conn, query, params)
+    return not df.empty

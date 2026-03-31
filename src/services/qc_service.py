@@ -6,6 +6,7 @@ from typing import Callable, Iterable, Optional
 import pandas as pd
 
 from queries import QC_queries
+from queries.queries_utils import filtered_experiments_exist
 
 
 # =========================================================
@@ -36,6 +37,11 @@ def issues_to_dataframe(issues: list[QCIssue]) -> pd.DataFrame:
         )
     return pd.DataFrame([asdict(i) for i in issues])
 
+@dataclass(frozen=True)
+class QCServiceResult:
+    status: str   # "ok" | "no_data"
+    message: str
+    issues_df: pd.DataFrame
 
 # =========================================================
 # Small helpers
@@ -60,7 +66,6 @@ def _experiment_label(row: pd.Series) -> str:
     if "capture_type" in row and pd.notna(row["capture_type"]):
         parts.append(f"capture_type={row['capture_type']}")
     return ", ".join(parts)
-
 
 def _make_experiment_issue(
     row: pd.Series,
@@ -92,7 +97,17 @@ def qc_experiments_missing_files(
     filters: Optional[dict] = None,
     severity: str = "warning",
     limit: int = 500,
-) -> pd.DataFrame:
+) -> QCServiceResult:
+    if not filtered_experiments_exist(conn, filters):
+        return QCServiceResult(
+            status="no_data",
+            message=(
+                "No records found for the selected filters. "
+                "Change the filter values or insert matching records first."
+            ),
+            issues_df=issues_to_dataframe([]),
+        )
+
     df = QC_queries.find_experiments_missing_files(
         conn=conn,
         file_types=file_types,
@@ -115,7 +130,17 @@ def qc_experiments_missing_files(
             )
         )
 
-    return issues_to_dataframe(issues)
+    if not issues:
+        return QCServiceResult(
+            status="ok",
+            message="No issues (experiments with missing files) found.",
+            issues_df=issues_to_dataframe([]),
+        )
+    return QCServiceResult(
+        status="ok",
+        message=f"Found {len(issues)} experiments with missing files.",
+        issues_df=issues_to_dataframe(issues),
+    )
 
 
 def qc_experiments_missing_metadata(
@@ -126,7 +151,16 @@ def qc_experiments_missing_metadata(
     mode: str = "any",
     severity: str = "warning",
     limit: int = 500,
-) -> pd.DataFrame:
+) -> QCServiceResult:
+    if not filtered_experiments_exist(conn, filters):
+        return QCServiceResult(
+            status="no_data",
+            message=(
+                "No records found for the selected filters. "
+                "Change the filter values or insert matching records first."
+            ),
+            issues_df=issues_to_dataframe([]),
+        )
     df = QC_queries.find_experiments_missing_metadata(
         conn=conn,
         required_fields=required_fields,
@@ -150,7 +184,18 @@ def qc_experiments_missing_metadata(
             )
         )
 
-    return issues_to_dataframe(issues)
+    if not issues:
+        return QCServiceResult(
+            status="ok",
+            message="No issues (experiments with missing metadata) found.",
+            issues_df=issues_to_dataframe([]),
+        )
+
+    return QCServiceResult(
+        status="ok",
+        message=f"Found {len(issues)} experiments with missing metadata.",
+        issues_df=issues_to_dataframe(issues),
+    )
 
 
 def qc_duplicate_experiments(
@@ -158,7 +203,16 @@ def qc_duplicate_experiments(
     *,
     filters: Optional[dict] = None,
     severity: str = "warning",
-) -> pd.DataFrame:
+) -> QCServiceResult:
+    if not filtered_experiments_exist(conn, filters):
+        return QCServiceResult(
+            status="no_data",
+            message=(
+                "No records found for the selected filters. "
+                "Change the filter values or insert matching records first."
+            ),
+            issues_df=issues_to_dataframe([]),
+        )
     df = QC_queries.find_duplicate_experiments(conn=conn, filters=filters)
 
     issues: list[QCIssue] = []
@@ -185,7 +239,17 @@ def qc_duplicate_experiments(
             )
         )
 
-    return issues_to_dataframe(issues)
+    if not issues:
+        return QCServiceResult(
+            status="ok",
+            message="No issues (duplicate experiments) found.",
+            issues_df=issues_to_dataframe([]),
+        )
+    return QCServiceResult(
+        status="ok",
+        message=f"Found {len(issues)} groups of duplicate experiments.",
+        issues_df=issues_to_dataframe(issues),
+    )
 
 
 def qc_missing_values(
@@ -198,7 +262,16 @@ def qc_missing_values(
     mode: str = "any",
     severity: str = "warning",
     limit: int = 500,
-) -> pd.DataFrame:
+) -> QCServiceResult:
+    if not filtered_experiments_exist(conn, filters):
+        return QCServiceResult(
+            status="no_data",
+            message=(
+                "No records found for the selected filters. "
+                "Change the filter values or insert matching records first."
+            ),
+            issues_df=issues_to_dataframe([]),
+        )
     df = QC_queries.find_missing_values(
         conn=conn,
         main_table=main_table,
@@ -232,16 +305,36 @@ def qc_missing_values(
             )
         )
 
-    return issues_to_dataframe(issues)
+    if not issues:
+        return QCServiceResult(
+            status="ok",
+            message="No issues (rows with missing values) found.",
+            issues_df=issues_to_dataframe([]),
+        )
+    return QCServiceResult(
+        status="ok",
+        message=f"Found {len(issues)} rows with missing values in target fields.",
+        issues_df=issues_to_dataframe(issues),
+    )
 
 
 def qc_analysis_files_without_results(
     conn: sqlite3.Connection,
+    filters: Optional[dict] = None,
     *,
     severity: str = "warning",
     limit: int = 500,
-) -> pd.DataFrame:
-    df = QC_queries.find_analysis_files_without_results(conn=conn, limit=limit)
+) -> QCServiceResult:
+    if not filtered_experiments_exist(conn, filters):
+        return QCServiceResult(
+            status="no_data",
+            message=(
+                "No records found for the selected filters. "
+                "Change the filter values or insert matching records first."
+            ),
+            issues_df=issues_to_dataframe([]),
+        )
+    df = QC_queries.find_analysis_files_without_results(conn=conn, filters=filters, limit=limit)
 
     issues: list[QCIssue] = []
     for _, row in df.iterrows():
@@ -261,16 +354,36 @@ def qc_analysis_files_without_results(
             )
         )
 
-    return issues_to_dataframe(issues)
+    if not issues:
+        return QCServiceResult(
+            status="ok",
+            message="No issues (analysis files without results) found.",
+            issues_df=issues_to_dataframe([]),
+        )
+    return QCServiceResult(
+        status="ok",
+        message=f"Found {len(issues)} analysis files that are not linked to any results.",
+        issues_df=issues_to_dataframe(issues),
+    )
 
 
 def qc_results_without_analysis_files(
     conn: sqlite3.Connection,
     *,
+    filters: Optional[dict] = None,
     severity: str = "warning",
     limit: int = 500,
-) -> pd.DataFrame:
-    df = QC_queries.find_results_without_analysis_files(conn=conn, limit=limit)
+) -> QCServiceResult:
+    if not filtered_experiments_exist(conn, filters):
+        return QCServiceResult(
+            status="no_data",
+            message=(
+                "No records found for the selected filters. "
+                "Change the filter values or insert matching records first."
+            ),
+            issues_df=issues_to_dataframe([]),
+        )
+    df = QC_queries.find_results_without_analysis_files(conn=conn, filters=filters, limit=limit)
 
     issues: list[QCIssue] = []
     for _, row in df.iterrows():
@@ -291,7 +404,17 @@ def qc_results_without_analysis_files(
             )
         )
 
-    return issues_to_dataframe(issues)
+    if not issues:
+        return QCServiceResult(
+            status="ok",
+            message="No issues (results without analysis files) found.",
+            issues_df=issues_to_dataframe([]),
+        )
+    return QCServiceResult(
+        status="ok",
+        message=f"Found {len(issues)} results that are not linked to any analysis files.",
+        issues_df=issues_to_dataframe(issues),
+    )
 
 
 def qc_experiments_with_analysis_but_no_results(
@@ -300,7 +423,16 @@ def qc_experiments_with_analysis_but_no_results(
     filters: Optional[dict] = None,
     severity: str = "warning",
     limit: int = 500,
-) -> pd.DataFrame:
+) -> QCServiceResult:
+    if not filtered_experiments_exist(conn, filters):
+        return QCServiceResult(
+            status="no_data",
+            message=(
+                "No records found for the selected filters. "
+                "Change the filter values or insert matching records first."
+            ),
+            issues_df=issues_to_dataframe([]),
+        )
     df = QC_queries.find_experiments_with_analysis_but_no_results(
         conn=conn,
         filters=filters,
@@ -321,7 +453,17 @@ def qc_experiments_with_analysis_but_no_results(
             )
         )
 
-    return issues_to_dataframe(issues)
+    if not issues:
+        return QCServiceResult(
+            status="ok",
+            message="No issues (experiments with analysis but no results) found.",
+            issues_df=issues_to_dataframe([]),
+        )
+    return QCServiceResult(
+        status="ok",
+        message=f"Found {len(issues)} experiments with analysis but no results.",
+        issues_df=issues_to_dataframe(issues),
+    )
 
 
 def qc_incomplete_linked_entities(
@@ -336,7 +478,16 @@ def qc_incomplete_linked_entities(
     severity: str = "warning",
     limit: int = 500,
     summary: Optional[str] = None,
-) -> pd.DataFrame:
+) -> QCServiceResult:
+    if not filtered_experiments_exist(conn, filters):
+        return QCServiceResult(
+            status="no_data",
+            message=(
+                "No records found for the selected filters. "
+                "Change the filter values or insert matching records first."
+            ),
+            issues_df=issues_to_dataframe([]),
+        )
     df = QC_queries.find_incomplete_linked_entities(
         conn=conn,
         base_table=base_table,
@@ -368,7 +519,17 @@ def qc_incomplete_linked_entities(
             )
         )
 
-    return issues_to_dataframe(issues)
+    if not issues:
+        return QCServiceResult(
+            status="ok",
+            message="No issues (incomplete linked entities) found.",
+            issues_df=issues_to_dataframe([]),
+        )
+    return QCServiceResult(
+        status="ok",
+        message=f"Found {len(issues)} incomplete linked entities.",
+        issues_df=issues_to_dataframe(issues),
+    )
 
 
 # =========================================================
@@ -380,10 +541,19 @@ def run_default_qc_suite(
     *,
     experiment_filters: Optional[dict] = None,
     limit_per_check: int = 500,
-) -> pd.DataFrame:
+) -> QCServiceResult:
     """
-    Run a default QC suite and return one standardized issue table.
+    Run a default QC suite and return standardized QCServiceResult with one issues table.
     """
+    if not filtered_experiments_exist(conn, experiment_filters):
+        return QCServiceResult(
+            status="no_data",
+            message=(
+                "No records found for the selected filters. "
+                "Change the filter values or insert matching records first."
+            ),
+            issues_df=issues_to_dataframe([]),
+        )
     outputs = [
         qc_experiments_missing_files(
             conn,
@@ -417,9 +587,17 @@ def run_default_qc_suite(
         ),
     ]
 
-    non_empty = [df for df in outputs if not df.empty]
+    non_empty = [output.issues_df for output in outputs if not output.issues_df.empty]
     if not non_empty:
-        return issues_to_dataframe([])
+        return QCServiceResult(
+            status="ok",
+            message="No issues found.",
+            issues_df=issues_to_dataframe([]),
+        )
 
     out = pd.concat(non_empty, ignore_index=True)
-    return out
+    return QCServiceResult(
+        status="ok",
+        message=f"Found {len(out)} issues.",
+        issues_df=out,
+    )

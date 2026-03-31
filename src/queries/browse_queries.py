@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, Optional, FrozenSet
 import pandas as pd
 
 from config import BASE_EXPERIMENT_QUERY, BASE_EXPERIMENT_TABLES
-from queries_utils import expand_columns,get_field, get_default_columns_for_target, infer_joins_bfs,get_where_clause_for_filters, build_query_context, execute_query
+from queries.queries_utils import expand_columns,get_field, get_default_columns_for_target, infer_joins_bfs,get_where_clause_for_filters, build_query_context, execute_query
 
 logger = logging.getLogger(__name__)
 

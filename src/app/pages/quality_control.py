@@ -4,11 +4,12 @@ import streamlit as st
 
 from config import FIELD_REGISTRY, load_config
 from db.connection import get_connection
-from browse_search import render_filter_widget_with_defaults 
+from pages.browse_search import render_filter_widget_with_defaults 
 from queries.queries_utils import group_fields_by_section, get_filterable_fields_for_target
 from streamlit_app import page_header
 
 from services.qc_service import (
+        QCServiceResult,
         run_default_qc_suite,
         qc_experiments_missing_files,
         qc_experiments_missing_metadata,
@@ -18,6 +19,7 @@ from services.qc_service import (
         qc_results_without_analysis_files,
         qc_incomplete_linked_entities,
     )
+
 
 # ----------------------------------------------------
 #           Helpers
@@ -114,15 +116,24 @@ def page_quality_control(conn: sqlite3.Connection):
             run_orphan_analysis = st.checkbox("Analysis files without results", value=True)
             run_orphan_results = st.checkbox("Results without analysis files", value=True)
 
-        st.markdown("**Optional linked-entity QC**")
+        st.markdown("**Optional linked-entity QCs**")
         run_raw_without_tracking = st.checkbox(
             "Experiments with RawFiles but no TrackingFiles",
             value=False,
         )
+        run_raw_without_mask = st.checkbox(
+            "Experiments with RawFiles but no MaskFiles",
+            value=False,
+        )
+        run_raw_without_analysis = st.checkbox(
+            "Experiments with RawFiles but no AnalysisFiles",
+            value=False,
+        )
+        
     else:
         run_missing_files = run_missing_metadata = run_duplicates = True
         run_analysis_no_results = run_orphan_analysis = run_orphan_results = True
-        run_raw_without_tracking = False
+        run_raw_without_tracking = run_raw_without_mask = run_raw_without_analysis = False
 
     limit_per_check = st.number_input(
         "Max rows per QC check",
@@ -134,21 +145,26 @@ def page_quality_control(conn: sqlite3.Connection):
     )
 
     run_qc_clicked = st.button("Run QC", type="primary")
-
+    
     if run_qc_clicked:
-        outputs = []
+        qc_result: QCServiceResult | None = None
 
         try:
             if run_default:
-                qc_df = run_default_qc_suite(
+                qc_result = run_default_qc_suite(
                     conn,
                     experiment_filters=experiment_filters,
                     limit_per_check=int(limit_per_check),
                 )
+                
+                    
             else:
+                outputs = []
+                checks_to_run = []
+
                 if run_missing_files:
-                    outputs.append(
-                        qc_experiments_missing_files(
+                    checks_to_run.append(
+                        lambda: qc_experiments_missing_files(
                             conn,
                             file_types=("raw", "tracking", "mask", "analysis"),
                             filters=experiment_filters,
@@ -157,8 +173,8 @@ def page_quality_control(conn: sqlite3.Connection):
                     )
 
                 if run_missing_metadata:
-                    outputs.append(
-                        qc_experiments_missing_metadata(
+                    checks_to_run.append(
+                        lambda: qc_experiments_missing_metadata(
                             conn,
                             required_fields=["organism", "protein", "condition", "capture_type", "date", "replicate"],
                             filters=experiment_filters,
@@ -168,16 +184,16 @@ def page_quality_control(conn: sqlite3.Connection):
                     )
 
                 if run_duplicates:
-                    outputs.append(
-                        qc_duplicate_experiments(
+                    checks_to_run.append(
+                        lambda: qc_duplicate_experiments(
                             conn,
                             filters=experiment_filters,
                         )
                     )
 
                 if run_analysis_no_results:
-                    outputs.append(
-                        qc_experiments_with_analysis_but_no_results(
+                    checks_to_run.append(
+                        lambda: qc_experiments_with_analysis_but_no_results(
                             conn,
                             filters=experiment_filters,
                             limit=int(limit_per_check),
@@ -185,24 +201,26 @@ def page_quality_control(conn: sqlite3.Connection):
                     )
 
                 if run_orphan_analysis:
-                    outputs.append(
-                        qc_analysis_files_without_results(
+                    checks_to_run.append(
+                        lambda: qc_analysis_files_without_results(
                             conn,
+                            filters=experiment_filters,
                             limit=int(limit_per_check),
                         )
                     )
 
                 if run_orphan_results:
-                    outputs.append(
-                        qc_results_without_analysis_files(
+                    checks_to_run.append(
+                        lambda: qc_results_without_analysis_files(
                             conn,
+                            filters=experiment_filters,
                             limit=int(limit_per_check),
                         )
                     )
 
                 if run_raw_without_tracking:
-                    outputs.append(
-                        qc_incomplete_linked_entities(
+                    checks_to_run.append(
+                        lambda: qc_incomplete_linked_entities(
                             conn,
                             base_table="Experiment",
                             present_entity=("RawFiles", "experiment_id"),
@@ -212,37 +230,84 @@ def page_quality_control(conn: sqlite3.Connection):
                             summary="Experiment has raw files but no tracking files.",
                         )
                     )
-
-                non_empty = [df for df in outputs if not df.empty]
-                if non_empty:
-                    qc_df = pd.concat(non_empty, ignore_index=True)
-                else:
-                    qc_df = pd.DataFrame(
-                        columns=[
-                            "entity_type",
-                            "entity_id",
-                            "issue_category",
-                            "severity",
-                            "issue_summary",
-                            "issue_details",
-                        ]
+                if run_raw_without_mask:
+                    checks_to_run.append(
+                        lambda: qc_incomplete_linked_entities(
+                            conn,
+                            base_table="Experiment",
+                            present_entity=("RawFiles", "experiment_id"),
+                            missing_entity=("Masks", "experiment_id"),
+                            filters=experiment_filters,
+                            limit=int(limit_per_check),
+                            summary="Experiment has raw files but no mask files.",
+                        )
                     )
+                if run_raw_without_analysis:
+                    checks_to_run.append(
+                        lambda: qc_incomplete_linked_entities(
+                            conn,
+                            base_table="Experiment",
+                            present_entity=("RawFiles", "experiment_id"),
+                            missing_entity=("AnalysisFiles", "id"),
+                            missing_bridge=("Experiment_Analysis_Files_Link", "experiment_id", "analysis_file_id"),
+                            filters=experiment_filters,
+                            limit=int(limit_per_check),
+                            summary="Experiment has raw files but no analysis files.",
+                        )
+                    )
+                
+                qc_result = None
 
-            st.session_state["qc_results_df"] = qc_df
+                for run_check in checks_to_run:
+                    result = run_check()
+
+                    if result.status == "no_data":
+                        qc_result = result
+                        break
+                    outputs.append(result.issues_df)
+                
+                if qc_result is None:
+                    non_empty = [df for df in outputs if not df.empty]
+                    if non_empty:
+                        qc_df = pd.concat(non_empty, ignore_index=True)
+                    else:
+                        qc_df = pd.DataFrame(
+                            columns=[
+                                "entity_type",
+                                "entity_id",
+                                "issue_category",
+                                "severity",
+                                "issue_summary",
+                                "issue_details",
+                            ]
+                        )
+
+                    qc_result = QCServiceResult(
+                        status="ok",
+                        message="No QC issues found for the selected checks." if qc_df.empty else f"Found {len(qc_df)} QC issue(s).",
+                        issues_df=qc_df,
+                    )
+                    
+            st.session_state["qc_result"] = qc_result
 
         except Exception as e:
             st.error(f"QC run failed: {e}")
 
-    qc_df = st.session_state.get("qc_results_df")
+    qc_result = st.session_state.get("qc_result")
 
-    if qc_df is not None:
+    if qc_result is not None:
+        qc_df = qc_result.issues_df
+
         st.divider()
         st.subheader("QC results")
 
-        if qc_df.empty:
-            st.success("No QC issues found for the selected checks.")
+        if qc_result.status == "no_data":
+            st.warning(qc_result.message)
             return
 
+        if qc_df.empty:
+            st.success(qc_result.message)
+            return
         # -----------------------------
         # Post-run issue filters
         # -----------------------------

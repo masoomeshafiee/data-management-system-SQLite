@@ -1,7 +1,6 @@
 import sqlite3
 import pandas as pd
-from typing import Dict, str, Any, Optional
-
+from typing import Dict, Any, Optional
 
 from config import BASE_EXPERIMENT_QUERY, BASE_EXPERIMENT_TABLES
 from queries.queries_utils import build_query_context, execute_query, get_field
@@ -427,53 +426,55 @@ def find_experiments_with_analysis_but_no_results(
     filters: Optional[Dict[str, Any]] = None,
     limit: int = 500,
 ) -> pd.DataFrame:
-    return find_incomplete_linked_entities(
-        conn=conn,
-        base_table="Experiment",
-        present_bridge=("Experiment_Analysis_Files_Link", "experiment_id", "analysis_file_id"),
-        present_entity=("AnalysisFiles", "id"),
-        missing_bridge=("Experiment_Analysis_Files_Link", "experiment_id", "analysis_file_id"),
-        missing_entity=("Result_analysis_Files_Link", "analysis_file_id"),
+    where_clauses, params, joins = build_query_context(
+        main_table="Experiment",
         filters=filters,
-        limit=limit,
+        base_tables={"Experiment","Experiment_Analysis_Files_Link", "AnalysisFiles", "Result_Analysis_Files_Link"},
     )
 
-
-# =========================================================
-# 8) Experiments with results but no analysis files
-# =========================================================
-
-def find_experiments_with_results_but_no_analysis_files(
-    conn: sqlite3.Connection,
-    filters: Optional[Dict[str, Any]] = None,
-    limit: int = 500,
-) -> pd.DataFrame:
     query = """
     SELECT DISTINCT
         Experiment.id AS experiment_id,
         Experiment.date,
         Experiment.replicate
     FROM Experiment
-    LEFT JOIN Experiment_Analysis_Files_Link eaf ON eaf.experiment_id = Experiment.id
-    LEFT JOIN AnalysisFiles af ON af.id = eaf.analysis_file_id
-    LEFT JOIN Result_analysis_Files_Link raf ON raf.analysis_file_id = af.id
-    LEFT JOIN Results r ON r.id = raf.result_id
-    WHERE r.id IS NOT NULL
-      AND af.id IS NULL
-    ORDER BY Experiment.id ASC
-    LIMIT :limit
+    INNER JOIN Experiment_Analysis_Files_Link eaf
+        ON eaf.experiment_id = Experiment.id
+    INNER JOIN AnalysisFiles af
+        ON af.id = eaf.analysis_file_id
+    LEFT JOIN Result_Analysis_Files_Link raf
+        ON raf.analysis_file_id = af.id
     """
-    return execute_query(conn, query, {"limit": int(limit)})
+
+    if joins:
+        query += " " + " ".join(joins)
+
+    if where_clauses:
+        query += " WHERE " + " AND ".join(where_clauses) + " AND raf.analysis_file_id IS NULL"
+    else:
+        query += " WHERE raf.analysis_file_id IS NULL"
+
+    query += " ORDER BY Experiment.id ASC LIMIT :limit"
+    params["limit"] = int(limit)
+
+    return execute_query(conn, query, params)
 
 
 # =========================================================
-# 9) Analysis files with no linked results
+# 8) Analysis files with no linked results
 # =========================================================
 
 def find_analysis_files_without_results(
     conn: sqlite3.Connection,
+    filters: Optional[Dict[str, Any]] = None,
     limit: int = 500,
 ) -> pd.DataFrame:
+    where_clauses, params, joins = build_query_context(
+        main_table="Experiment",
+        filters=filters,
+        base_tables={"Experiment", "Experiment_Analysis_Files_Link", "AnalysisFiles"},
+    )
+
     query = """
     SELECT
         af.id AS analysis_file_id,
@@ -481,23 +482,41 @@ def find_analysis_files_without_results(
         af.file_type,
         af.file_path
     FROM AnalysisFiles af
-    LEFT JOIN Result_analysis_Files_Link raf ON raf.analysis_file_id = af.id
+    JOIN Experiment_Analysis_Files_Link eaf ON eaf.analysis_file_id = af.id
+    JOIN Experiment ON Experiment.id = eaf.experiment_id
+    LEFT JOIN Result_Analysis_Files_Link raf ON raf.analysis_file_id = af.id
     LEFT JOIN Results r ON r.id = raf.result_id
-    WHERE r.id IS NULL
-    ORDER BY af.id ASC
-    LIMIT :limit
     """
-    return execute_query(conn, query, {"limit": int(limit)})
+
+    if joins:
+        query += " " + " ".join(joins)
+
+    if where_clauses:
+        query += " WHERE " + " AND ".join(where_clauses) + " AND r.id IS NULL"
+    else:
+        query += " WHERE r.id IS NULL"
+
+    query += " ORDER BY af.id ASC LIMIT :limit"
+    params["limit"] = int(limit)
+
+    return execute_query(conn, query, params)
 
 
 # =========================================================
-# 10) Results with no linked analysis files
+# 9) Results with no linked analysis files
 # =========================================================
 
 def find_results_without_analysis_files(
     conn: sqlite3.Connection,
+    filters: Optional[Dict[str, Any]] = None,
     limit: int = 500,
 ) -> pd.DataFrame:
+    where_clauses, params, joins = build_query_context(
+        main_table="Experiment",
+        filters=filters,
+        base_tables={"Experiment", "Experiment_Analysis_Files_Link", "AnalysisFiles", "Result_Analysis_Files_Link", "Results"},
+    )
+
     query = """
     SELECT
         r.id AS result_id,
@@ -506,10 +525,19 @@ def find_results_without_analysis_files(
         r.sample_size,
         r.standard_error
     FROM Results r
-    LEFT JOIN Result_analysis_Files_Link raf ON raf.result_id = r.id
+    LEFT JOIN Result_Analysis_Files_Link raf ON raf.result_id = r.id
     LEFT JOIN AnalysisFiles af ON af.id = raf.analysis_file_id
-    WHERE af.id IS NULL
-    ORDER BY r.id ASC
-    LIMIT :limit
     """
-    return execute_query(conn, query, {"limit": int(limit)})
+
+    if joins:
+        query += " " + " ".join(joins)
+
+    if where_clauses:
+        query += " WHERE " + " AND ".join(where_clauses) + " AND af.id IS NULL"
+    else:
+        query += " WHERE af.id IS NULL"
+
+    query += " ORDER BY r.id ASC LIMIT :limit"
+    params["limit"] = int(limit)
+
+    return execute_query(conn, query, params)
