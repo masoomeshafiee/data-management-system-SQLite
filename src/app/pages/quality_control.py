@@ -4,12 +4,13 @@ import streamlit as st
 
 from config import FIELD_REGISTRY, load_config
 from db.connection import get_connection
-from pages.browse_search import render_filter_widget_with_defaults 
+from app.ui.filter_widgets import render_filter_widget_with_defaults
+from app.ui.layout import page_header 
 from queries.queries_utils import group_fields_by_section, get_filterable_fields_for_target
-from streamlit_app import page_header
 
 from services.qc_service import (
         QCServiceResult,
+        qc_experiments_with_is_valid_zero,
         run_default_qc_suite,
         qc_experiments_missing_files,
         qc_experiments_missing_metadata,
@@ -22,7 +23,7 @@ from services.qc_service import (
 
 
 # ----------------------------------------------------
-#           Helpers
+# Helpers
 # ----------------------------------------------------
 def render_dynamic_filter_panel(
     conn: sqlite3.Connection,
@@ -107,6 +108,7 @@ def page_quality_control(conn: sqlite3.Connection):
         colA, colB = st.columns(2)
 
         with colA:
+            find_invalid_experiments = st.checkbox("Find invalid experiments (is_valid = 0)", value=True)
             run_missing_files = st.checkbox("Missing expected files", value=True)
             run_missing_metadata = st.checkbox("Missing metadata", value=True)
             run_duplicates = st.checkbox("Duplicate experiments", value=True)
@@ -131,7 +133,7 @@ def page_quality_control(conn: sqlite3.Connection):
         )
         
     else:
-        run_missing_files = run_missing_metadata = run_duplicates = True
+        find_invalid_experiments = run_missing_files = run_missing_metadata = run_duplicates = True
         run_analysis_no_results = run_orphan_analysis = run_orphan_results = True
         run_raw_without_tracking = run_raw_without_mask = run_raw_without_analysis = False
 
@@ -161,6 +163,13 @@ def page_quality_control(conn: sqlite3.Connection):
             else:
                 outputs = []
                 checks_to_run = []
+
+                if find_invalid_experiments:
+                    checks_to_run.append(lambda: qc_experiments_with_is_valid_zero(
+                        conn,
+                        filters=experiment_filters,
+                        limit=int(limit_per_check),
+                    ))
 
                 if run_missing_files:
                     checks_to_run.append(

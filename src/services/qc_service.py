@@ -90,6 +90,50 @@ def _make_experiment_issue(
 # Individual QC runners
 # =========================================================
 
+def qc_experiments_with_is_valid_zero(
+    conn: sqlite3.Connection,
+    *,
+    filters: Optional[dict] = None,
+    severity: str = "warning",
+    limit: int = 500,
+) -> QCServiceResult:
+    if not filtered_experiments_exist(conn, filters):
+        return QCServiceResult(
+            status="no_data",
+            message=(
+                "No records found for the selected filters. "
+                "Change the filter values or insert matching records first."
+            ),
+            issues_df=issues_to_dataframe([]),
+        )
+
+    df = QC_queries.find_invalid_experiments(conn=conn, filters=filters, limit=limit)
+
+    issues: list[QCIssue] = []
+    for _, row in df.iterrows():
+        details = _experiment_label(row)
+        issues.append(
+            _make_experiment_issue(
+                row,
+                category="invalid_experiment",
+                severity=severity,
+                summary="Experiment is marked as invalid (is_valid = 0).",
+                details=details,
+            )
+        )
+
+    if not issues:
+        return QCServiceResult(
+            status="ok",
+            message="No issues (experiments with is_valid = 0) found.",
+            issues_df=issues_to_dataframe([]),
+        )
+    return QCServiceResult(
+        status="ok",
+        message=f"Found {len(issues)} experiments with is_valid = 0.",
+        issues_df=issues_to_dataframe(issues),
+    )
+
 def qc_experiments_missing_files(
     conn: sqlite3.Connection,
     *,

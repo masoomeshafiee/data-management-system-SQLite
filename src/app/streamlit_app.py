@@ -6,32 +6,15 @@ import sqlite3
 
 from config import load_config
 from db.connection import get_conn
+from app.ui.layout import page_header, page_placeholder
 from queries.browse_queries import list_users
 from queries.insert_queries import create_user
-
-# -----------------------------
-# UI helpers
-# -----------------------------
-
-def page_header(title: str, subtitle: str | None = None):
-    st.title(title)
-    if subtitle:
-        st.caption(subtitle)
-
-def page_placeholder(title: str):
-    page_header(title)
-    st.info("We’ll build this page next.")
-
-def require_user_selected() -> int:
-    if "current_user_id" not in st.session_state or st.session_state.current_user_id is None:
-        st.warning("Select your user name in the sidebar to continue.")
-        st.stop()
-    return int(st.session_state.current_user_id)
 
 
 # -----------------------------
 # Main App Helpers
 # -----------------------------
+
 def sidebar(conn: sqlite3.Connection):
     st.sidebar.header("Lab Metadata DB")
 
@@ -63,6 +46,7 @@ def sidebar(conn: sqlite3.Connection):
         index=0,
     )
     return page
+
 
 def page_setup_first_user(conn: sqlite3.Connection):
     page_header("Setup / Create First User", "Initialize the app with the first lab user")
