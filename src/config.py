@@ -113,6 +113,14 @@ class FieldDef:
 
 
 FIELD_REGISTRY: Dict[str, FieldDef] = {
+    # reference tables:
+    "organism_id": FieldDef("organism_id", "Organism", "id", data_type="int", section="sample", applies_to=frozenset({ "Organism"})),
+    "protein_id": FieldDef("protein_id", "Protein", "id", data_type="int", section="sample", applies_to=frozenset({"Protein"})),
+    "strain_id": FieldDef("strain_id", "StrainOrCellLine", "id", data_type="int", section="sample", applies_to=frozenset({"StrainOrCellLine"})),
+    "condition_id": FieldDef("condition_id", "Condition", "id", data_type="int", section="sample", applies_to=frozenset({"Condition"})),
+    "capture_setting_id": FieldDef("capture_setting_id", "CaptureSetting", "id", data_type="int", section="microscopy", applies_to=frozenset({"CaptureSetting"})),
+    
+
     # Experiment
     "experiment_id": FieldDef("experiment_id", "Experiment", "id", data_type="int", section="experiment",
         default_visible=True, applies_to=frozenset({"Experiment"})),
@@ -219,6 +227,22 @@ TABLE_RELATIONSHIPS = {
 }
 
 
+REFERENCE_PARENT_TABLES = {
+    "Organism",
+    "Protein",
+    "StrainOrCellLine",
+    "Condition",
+    "CaptureSetting",
+    "User",
+}
+
+
+REFERENCE_PARENT_CONFIG = {
+    parent_table: fk_col
+    for fk_col, parent_table in TABLE_RELATIONSHIPS["Experiment"].items()
+}
+
+
 # =======================================================
 # Experiment browsing / search config
 # =======================================================
@@ -275,3 +299,5 @@ JOIN Condition ON Experiment.condition_id = Condition.id
 JOIN CaptureSetting ON Experiment.capture_setting_id = CaptureSetting.id
 LEFT JOIN User ON Experiment.user_id = User.id
 """
+
+

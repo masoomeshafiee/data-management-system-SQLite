@@ -4,7 +4,14 @@ import streamlit as st
 import pandas as pd
 from config import load_config, FIELD_REGISTRY, TARGET_OPTIONS
 
-from queries.queries_utils import get_filterable_fields_for_target, get_selectable_fields_for_target, get_default_columns_for_target, group_fields_by_section
+from queries.queries_utils import (
+        get_filterable_fields_for_target,
+        get_selectable_fields_for_target,
+        get_default_columns_for_target,
+        group_fields_by_section,
+        get_id_field_for_target
+        )
+
 from queries.browse_queries import (
         search_table,
         get_experiment_metadata,
@@ -25,6 +32,28 @@ from queries.save_searche import (
 from db.connection import get_connection
 from app.ui.layout import page_header, require_user_selected
 from app.ui.filter_widgets import render_filter_widget_with_defaults
+
+from app.ui.action_panels import (
+    render_selectable_table,
+    get_selected_rows,
+    render_action_buttons,
+)
+from services.delete_service import (
+    preview_delete_experiments,
+    execute_delete_experiments,
+    preview_delete_analysis_files,
+    execute_delete_analysis_files,
+    preview_delete_raw_files,
+    execute_delete_raw_files,
+    preview_delete_tracking_files,
+    execute_delete_tracking_files,
+    preview_delete_masks,
+    execute_delete_masks,
+    preview_delete_results,
+    execute_delete_results,
+    preview_delete_reference_entities,
+    execute_delete_reference_entities,
+)
 
 
 
@@ -55,6 +84,86 @@ def render_result_detail_ui(target_table: str, df: pd.DataFrame):
         st.session_state["selected_experiment_id"] = int(selected_experiment_id)
         st.rerun()
 
+def _preview_delete_for_target(
+    conn: sqlite3.Connection,
+    *,
+    target_table: str,
+    selected_rows: pd.DataFrame,
+):
+    id_column = get_id_field_for_target(target_table)
+    if id_column is None:
+        raise ValueError(f"Delete is not supported for target table '{target_table}'.")
+
+    if id_column not in selected_rows.columns:
+        raise ValueError(
+            f"Selected rows do not contain the required id column '{id_column}' for target '{target_table}'."
+        )
+
+    ids = selected_rows[id_column].dropna().tolist()
+
+    if target_table == "Experiment":
+        return preview_delete_experiments(conn, ids)
+
+    if target_table == "AnalysisFiles":
+        return preview_delete_analysis_files(conn, ids)
+
+    if target_table == "RawFiles":
+        return preview_delete_raw_files(conn, ids)
+
+    if target_table == "TrackingFiles":
+        return preview_delete_tracking_files(conn, ids)
+
+    if target_table == "Masks":
+        return preview_delete_masks(conn, ids)
+
+    if target_table == "Results":
+        return preview_delete_results(conn, ids)
+
+    if target_table in {"Organism", "Protein", "StrainOrCellLine", "Condition", "CaptureSetting", "User"}:
+        return preview_delete_reference_entities(
+            conn,
+            parent_table=target_table,
+            parent_ids=ids,
+        )
+
+    raise ValueError(f"Delete is not supported for target table '{target_table}'.")
+
+def _execute_delete_for_target(
+    conn: sqlite3.Connection,
+    *,
+    target_table: str,
+    selected_ids: list[int],
+):
+    """
+    Route delete execution by target_table.
+    Returns a DeleteExecutionResult from the delete service.
+    """
+    if target_table == "Experiment":
+        return execute_delete_experiments(conn, selected_ids)
+
+    if target_table == "AnalysisFiles":
+        return execute_delete_analysis_files(conn, selected_ids)
+
+    if target_table == "RawFiles":
+        return execute_delete_raw_files(conn, selected_ids)
+
+    if target_table == "TrackingFiles":
+        return execute_delete_tracking_files(conn, selected_ids)
+
+    if target_table == "Masks":
+        return execute_delete_masks(conn, selected_ids)
+
+    if target_table == "Results":
+        return execute_delete_results(conn, selected_ids)
+
+    if target_table in {"Organism", "Protein", "StrainOrCellLine", "Condition", "CaptureSetting", "User"}:
+        return execute_delete_reference_entities(
+            conn,
+            parent_table=target_table,
+            parent_ids=selected_ids,
+        )
+
+    raise ValueError(f"Delete is not supported for target table '{target_table}'.")
 # ----------------------------------
 # Main function
 # ----------------------------------
@@ -96,28 +205,28 @@ def page_browse(conn: sqlite3.Connection):
         include_shared=True,
     )
 
-    preset_options = [""] + [
-        f'{row["name"]}{" [shared]" if int(row["is_shared"]) == 1 else ""} - {row["user_name"]}'
+    preset_choices = [None] + [
+        {
+            "id": int(row["id"]),
+            "label": f'{row["name"]}{" [shared]" if int(row["is_shared"]) == 1 else ""} - {row["user_name"]}',
+        }
         for _, row in presets_df.iterrows()
     ]
-    preset_id_map = {
-        f'{row["name"]}{" [shared]" if int(row["is_shared"]) == 1 else ""} - {row["user_name"]} (id={row["id"]})': int(row["id"])
-        for _, row in presets_df.iterrows()
-    }
 
     colA, colB, colC = st.columns([2, 1, 1])
 
     with colA:
-        preset_label = st.selectbox(
+        preset_choice = st.selectbox(
             "Load saved search",
-            options=preset_options,
+            options=preset_choices,
             index=0,
+            format_func=lambda x: "" if x is None else x["label"],
             key=f"{prefix}_preset_name",
         )
 
     with colB:
-        if preset_label and st.button("Load preset", key=f"{prefix}_load_preset"):
-            preset_id = preset_id_map[preset_label]
+        if preset_choice is not None and st.button("Load preset", key=f"{prefix}_load_preset"):
+            preset_id = preset_choice["id"]
             preset = get_saved_search_by_id(conn, preset_id)
 
             if preset is None:
@@ -138,8 +247,8 @@ def page_browse(conn: sqlite3.Connection):
                 st.rerun()
 
     with colC:
-        if preset_label and st.button("Delete preset", key=f"{prefix}_delete_preset"):
-            preset_id = preset_id_map[preset_label]
+        if preset_choice is not None and st.button("Delete preset", key=f"{prefix}_delete_preset"):
+            preset_id = preset_choice["id"]
             preset = get_saved_search_by_id(conn, preset_id)
 
             if preset is None:
@@ -292,11 +401,16 @@ def page_browse(conn: sqlite3.Connection):
             st.warning("Choose at least one result column.")
         else:
             try:
+                id_field_alias = get_id_field_for_target(target_table)
+
+                query_columns = selected_columns.copy()
+                if id_field_alias and id_field_alias not in query_columns:
+                    query_columns.append(id_field_alias)
                 df = search_table(
                     conn=conn,
                     main_table=target_table,
                     filters=filters,
-                    requested_columns=selected_columns,
+                    requested_columns=query_columns,
                     limit=int(limit),
                 )
                 st.session_state[f"{prefix}_results"] = df
@@ -355,9 +469,11 @@ def page_browse(conn: sqlite3.Connection):
 
     if df is not None:
         st.subheader("Results")
-        st.dataframe(df, use_container_width=True, hide_index=True)
 
-        if not df.empty:
+        if df.empty:
+            st.info("No results found.")
+        else:
+            # main results download
             st.download_button(
                 "Download results (CSV)",
                 data=df.to_csv(index=False),
@@ -366,10 +482,132 @@ def page_browse(conn: sqlite3.Connection):
                 key=f"{prefix}_download_csv",
             )
 
-            render_result_detail_ui(target_table, df)
+            # selectable table for actions
+            edited_df = render_selectable_table(
+                df,
+                key=f"{prefix}_results_editor",
+            )
+            selected_rows = get_selected_rows(edited_df)
 
-        else:
-            st.info("No results found.")
+            st.caption(f"{len(selected_rows)} row(s) selected.")
+
+            delete_clicked, mark_invalid_clicked, export_clicked = render_action_buttons(
+                key_prefix=f"{prefix}_actions"
+            )
+
+            # Export selected
+            if export_clicked:
+                if selected_rows.empty:
+                    st.warning("Please select at least one row to export.")
+                else:
+                    st.download_button(
+                        "Download selected rows (CSV)",
+                        data=selected_rows.to_csv(index=False),
+                        file_name=f"{target_table.lower()}_selected_rows.csv",
+                        mime="text/csv",
+                        key=f"{prefix}_download_selected_csv",
+                    )
+
+            # Mark invalid
+            if mark_invalid_clicked:
+                if selected_rows.empty:
+                    st.warning("Please select at least one row to mark invalid.")
+                elif target_table != "Experiment":
+                    st.warning("Mark invalid is currently supported only for Experiment results.")
+                else:
+                    st.info("Mark invalid is not implemented yet.")
+
+            # Delete selected -> preview
+            if delete_clicked:
+                if selected_rows.empty:
+                    st.warning("Please select at least one row to delete.")
+                else:
+                    try:
+                        delete_preview = _preview_delete_for_target(
+                            conn,
+                            target_table=target_table,
+                            selected_rows=selected_rows,
+                        )
+                        st.session_state[f"{prefix}_delete_preview"] = delete_preview
+                        st.session_state[f"{prefix}_delete_target_table"] = target_table
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Could not prepare delete preview: {e}")
+
+            # delete preview panel
+            delete_preview = st.session_state.get(f"{prefix}_delete_preview")
+            if delete_preview is not None:
+                st.divider()
+                st.subheader("Delete preview")
+                st.warning(delete_preview.message)
+
+                if not delete_preview.summary_df.empty:
+                    st.markdown("**Summary of affected records**")
+                    st.dataframe(delete_preview.summary_df, use_container_width=True, hide_index=True)
+
+                with st.expander("Show details", expanded=False):
+                    for name, detail_df in delete_preview.details.items():
+                        st.markdown(f"**{name.replace('_', ' ').title()}**")
+                        if detail_df.empty:
+                            st.caption("No rows.")
+                        else:
+                            st.dataframe(detail_df, use_container_width=True, hide_index=True)
+
+                col_confirm, col_cancel = st.columns(2)
+
+                with col_confirm:
+                    confirm_delete = st.button(
+                        "Confirm delete",
+                        type="primary",
+                        key=f"{prefix}_confirm_delete",
+                    )
+
+                with col_cancel:
+                    cancel_delete = st.button(
+                        "Cancel",
+                        key=f"{prefix}_cancel_delete",
+                    )
+
+                if cancel_delete:
+                    st.session_state.pop(f"{prefix}_delete_preview", None)
+                    st.rerun()
+
+                if confirm_delete:
+                    if confirm_delete:
+                        try:
+                            delete_target_table = st.session_state.get(f"{prefix}_delete_target_table", target_table)
+
+                            selected_ids = (
+                                delete_preview.selected_ids
+                                if hasattr(delete_preview, "selected_ids")
+                                else delete_preview["selected_ids"]
+                            )
+
+                            delete_result = _execute_delete_for_target(
+                                conn,
+                                target_table=delete_target_table,
+                                selected_ids=selected_ids,
+                            )
+
+                            st.session_state[f"{prefix}_delete_result"] = delete_result
+                            st.session_state.pop(f"{prefix}_delete_preview", None)
+                            st.session_state.pop(f"{prefix}_delete_target_table", None)
+                            st.session_state.pop(f"{prefix}_results", None)
+                            st.session_state.pop("selected_experiment_id", None)
+                            st.rerun()
+
+                        except Exception as e:
+                            st.error(f"Delete failed: {e}")
+
+            # delete result message
+            delete_result = st.session_state.get(f"{prefix}_delete_result")
+            if delete_result is not None:
+                if delete_result.status == "ok":
+                    st.success(delete_result.message)
+                else:
+                    st.error(delete_result.message)
+
+            render_result_detail_ui(target_table, df)
 
     # -----------------------------
     # Experiment detail section

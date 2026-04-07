@@ -27,6 +27,18 @@ def get_fields_for_target(target_table: str) -> list[FieldDef]:
         if target_table in f.applies_to
     ]
 
+def get_id_field_for_target(target_table: str) -> str | None:
+    """
+    Return the alias of the primary key field (table.id) for a given target_table.
+    Returns None if not found.
+    """
+    fields = get_fields_for_target(target_table)
+
+    for f in fields:
+        if f.column == "id":
+            return f.alias
+
+    return None
 
 def get_default_columns_for_target(target_table: str) -> list[str]:
     return [
