@@ -3,11 +3,15 @@
 from dataclasses import dataclass, field
 import os
 import streamlit as st
+from pathlib import Path
 
 from typing import Dict, FrozenSet, List
 
 import re
 
+
+
+SHAREPOINT_SYNC_ROOT = Path("/Users/labuser/SharePoint/").resolve()
 
 # ===============================
 # General app configuration

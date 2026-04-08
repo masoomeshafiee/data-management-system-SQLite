@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 import streamlit as st
 
-from config import load_config, SUPPORTED_EXTS, FOLDER_HINTS, ROLE_OPTIONS, CAPTURE_TYPES, ALLOWED_ORGANISMS, MASK_TYPES, CONDITION_UNITS
+from config import load_config, SUPPORTED_EXTS, FOLDER_HINTS, ROLE_OPTIONS, CAPTURE_TYPES, ALLOWED_ORGANISMS, MASK_TYPES, CONDITION_UNITS, SHAREPOINT_SYNC_ROOT
 from queries.insert_queries import insert_manifest 
 from services.data_validation import validate_manifest
 
@@ -59,9 +59,19 @@ def suggest_role_from_folder(relative_folder: str) -> str:
     return "unassigned"
 
 
-def scan_experiment_folder(root_folder: Path) -> pd.DataFrame:
+def scan_experiment_folder(root_folder: Path, *, storage_root: Path) -> pd.DataFrame:
     rows: List[dict] = []
     root_folder = root_folder.resolve()
+    storage_root = storage_root.resolve()
+
+    # Safety check: the selected folder must be inside the synced SharePoint root
+    try:
+        root_folder.relative_to(storage_root)
+    except ValueError:
+        raise ValueError(
+            f"Selected folder must be inside the SharePoint sync root: {storage_root}"
+        )
+
 
     for p in root_folder.rglob("*"):
         if not p.is_file():
@@ -76,12 +86,26 @@ def scan_experiment_folder(root_folder: Path) -> pd.DataFrame:
         rel_folder = str(p.parent.relative_to(root_folder))
         size_bytes, mtime = safe_stat(p)
 
+        # path relative to the scanned experiment folder
+        #experiment_relative_path = str(p.relative_to(root_folder))
+        # path relative to the global synced SharePoint root
+        #storage_relative_path = str(p.relative_to(storage_root))
+
         rows.append(
             {
                 "relative_folder": "." if rel_folder == "" else rel_folder,
                 "file_name": p.name,
                 "ext": ext,
-                "full_path": str(p),
+
+                # temp
+                #"full_path": str(p),
+                "full_path": str(p.relative_to(SHAREPOINT_SYNC_ROOT)),
+
+                # this is what we store in DB
+                #"storage_relative_path": storage_relative_path,
+
+                #"experiment_relative_path": experiment_relative_path,
+
                 "size_mb": None if size_bytes is None else round(size_bytes / (1024 * 1024), 3),
                 "modified": None if mtime is None else datetime.fromtimestamp(mtime).isoformat(timespec="seconds"),
                 "suggested_data_type": suggest_role_from_folder(rel_folder),
@@ -352,13 +376,18 @@ folder_path = st.text_input(
 scan = st.button("Scan folder", type="primary", disabled=not folder_path.strip())
 
 if scan:
-    root = Path(folder_path.strip())
+    root = Path(folder_path.strip()).resolve()
     if not root.exists() or not root.is_dir():
         st.error("Folder path does not exist or is not a directory.")
         st.stop()
 
-    df = scan_experiment_folder(root)
-    st.session_state["intake_root"] = str(root.resolve())
+    try:
+        df = scan_experiment_folder(root, storage_root=SHAREPOINT_SYNC_ROOT)
+    except ValueError as exc:
+        st.error(str(exc))
+        st.stop()
+
+    st.session_state["intake_root"] = str(root)
     st.session_state["intake_df"] = df
 
 # Load existing scan from session
