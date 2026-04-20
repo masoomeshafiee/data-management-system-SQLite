@@ -58,6 +58,17 @@ def suggest_role_from_folder(relative_folder: str) -> str:
             return FOLDER_HINTS[part]
     return "unassigned"
 
+def infer_experiment_group(relative_folder: str) -> str:
+    """
+    Group files by the first folder under the selected root.
+    Examples:
+        "." -> "."
+        "exp1" -> "exp1"
+        "exp1/raw" -> "exp1"
+        "projectA/rep1/masks" -> "projectA"
+    """
+    parts = Path(relative_folder).parts
+    return "." if len(parts) == 0 else parts[0]
 
 def scan_experiment_folder(root_folder: Path, *, storage_root: Path) -> pd.DataFrame:
     rows: List[dict] = []
@@ -94,6 +105,7 @@ def scan_experiment_folder(root_folder: Path, *, storage_root: Path) -> pd.DataF
         rows.append(
             {
                 "relative_folder": "." if rel_folder == "" else rel_folder,
+                "experiment_group":infer_experiment_group(rel_folder),
                 "file_name": p.name,
                 "ext": ext,
 
@@ -135,7 +147,7 @@ def scan_experiment_folder(root_folder: Path, *, storage_root: Path) -> pd.DataF
     df["data_type"] = df["suggested_data_type"].where(df["suggested_data_type"].isin(ROLE_OPTIONS), "unassigned")
 
     # Stable ordering
-    df = df.sort_values(["relative_folder", "file_name"]).reset_index(drop=True)
+    df = df.sort_values(["experiment_group", "relative_folder", "file_name"]).reset_index(drop=True)
     return df
 
 
@@ -274,6 +286,7 @@ def resolve_file_metadata(
         {
             "path": file_row["full_path"],
             "relative_folder": file_row["relative_folder"],
+            "experiment_group": file_row.get("experiment_group", "."),
             "file_name": file_row["file_name"],
             "ext": file_row["ext"],
             "data_type": dt,
@@ -306,7 +319,7 @@ def resolve_file_metadata(
 
 def build_manifest(*,
     global_defaults: dict,
-    experiment_meta: dict,
+    experiment_meta_by_group: Dict[str, dict],
     type_defaults: Dict[str, dict],
     df: pd.DataFrame,
 ) -> dict:
@@ -320,6 +333,7 @@ def build_manifest(*,
             {
                 "path": r["full_path"],
                 "relative_folder": r["relative_folder"],
+                "experiment_group":r["experiment_group"],
                 "file_name": r["file_name"],
                 "ext": r["ext"],
                 "data_type": r["data_type"],
@@ -333,6 +347,8 @@ def build_manifest(*,
                     "ov_mask_type": _none_if_blank(r.get("ov_mask_type", "")),},
             }
         )
+        group = r.get("experiment_group",".")
+        experiment_meta = experiment_meta_by_group.get(group, {})
         files_resolved.append(
             resolve_file_metadata(
                 global_defaults=global_defaults,
@@ -344,7 +360,7 @@ def build_manifest(*,
 
     return {
         "global_defaults": global_defaults,
-        "experiment": experiment_meta,
+        "experiment_metadata_by_group": experiment_meta_by_group,
         "type_defaults": type_defaults,
         "files_raw": files_raw,
         "files_resolved": files_resolved,
@@ -352,6 +368,20 @@ def build_manifest(*,
     }
 
 
+
+def resolve_input_folder(folder_input: str, *, storage_root: Path) -> Path:
+    raw = folder_input.strip()
+    if not raw:
+        raise ValueError("Please enter a folder path.")
+
+    p = Path(raw)
+
+    # If user entered an absolute path, use it directly
+    if p.is_absolute():
+        return p.resolve()
+
+    # Otherwise treat it as relative to the synced SharePoint root
+    return (storage_root / p).resolve()
 # ----------------------------
 # Streamlit UI
 # ----------------------------
@@ -376,9 +406,16 @@ folder_path = st.text_input(
 scan = st.button("Scan folder", type="primary", disabled=not folder_path.strip())
 
 if scan:
-    root = Path(folder_path.strip()).resolve()
+    try:
+        root = resolve_input_folder(folder_path, storage_root=SHAREPOINT_SYNC_ROOT)
+    except ValueError as exc:
+        st.error(str(exc))
+        st.stop()
+
     if not root.exists() or not root.is_dir():
-        st.error("Folder path does not exist or is not a directory.")
+        st.error(
+            f"Folder path does not exist or is not a directory: {root}"
+        )
         st.stop()
 
     try:
@@ -476,7 +513,7 @@ st.markdown(f"Number of records found based on the filtering criteria: `{len(vie
 
 
 # Base columns always visible/editable
-base_cols = ["relative_folder", "file_name", "ext", "data_type", "full_path"]
+base_cols = ["experiment_group","relative_folder", "file_name", "ext", "data_type", "full_path"]
 
 # Override columns depend on filter + advanced toggle
 tracking_override_cols = ["ov_threshold", "ov_linking_distance", "ov_gap_closing_distance", "ov_max_frame_gap"]
@@ -505,7 +542,7 @@ edited_df = st.data_editor(
     view_df[cols_to_show],
     use_container_width=True,
     hide_index=True,
-    disabled=["relative_folder", "file_name", "ext", "full_path"],
+    disabled=["experiment_group","relative_folder", "file_name", "ext", "full_path"],
     column_config={
         "data_type": st.column_config.SelectboxColumn("data_type", options=ROLE_OPTIONS),
         # You can optionally add column configs for numeric fields:
@@ -533,6 +570,10 @@ scope = st.radio(
     horizontal=True,
 )
 
+# Initialize grouped experiment metadata store
+if "meta_experiment_by_group" not in st.session_state:
+    st.session_state["meta_experiment_by_group"] = {}
+
 
 # ---- Global defaults form ----
 
@@ -549,7 +590,6 @@ if scope == "Global defaults":
         with c2:
             fluorescent_dye = st.text_input("fluorescent_dye")
             dye_concentration_value = st.number_input("dye_concentration_value (nM)", value=0.0, step=0.1)
-            
 
         with c3:
             objective_magnification = st.number_input("objective_magnification (ex. 100)", value=0.0, step=1.0)
@@ -559,123 +599,239 @@ if scope == "Global defaults":
             pixel_size = st.number_input("pixel_size (microns)", value=0.0, step=0.01)
 
         submitted = st.form_submit_button("Save global metadata defaults")
-        if submitted:
-            st.session_state["defaults_global"] = {
-                "user_name": _clean_str(user_name),
-                "user_last_name": _clean_str(user_last_name),
-                "user_email": _clean_str(user_email),
-                "fluorescent_dye": _clean_str(fluorescent_dye),
-                "dye_concentration_value": _none_if_zero_float(float(dye_concentration_value)),
-                "objective_magnification": _none_if_zero_float(float(objective_magnification)),
-                "laser_wavelength": _none_if_zero_float(float(laser_wavelength)),
-                "laser_intensity": _none_if_zero_float(float(laser_intensity)),
-                "camera_binning": _none_if_zero_int(int(camera_binning)),
-                "pixel_size": _none_if_zero_float(float(pixel_size)),
-            }
-            st.success("Saved global defaults for this intake session.")
+
+    if submitted:
+        st.session_state["defaults_global"] = {
+            "user_name": _clean_str(user_name),
+            "user_last_name": _clean_str(user_last_name),
+            "user_email": _clean_str(user_email),
+            "fluorescent_dye": _clean_str(fluorescent_dye),
+            "dye_concentration_value": _none_if_zero_float(float(dye_concentration_value)),
+            "objective_magnification": _none_if_zero_float(float(objective_magnification)),
+            "laser_wavelength": _none_if_zero_float(float(laser_wavelength)),
+            "laser_intensity": _none_if_zero_float(float(laser_intensity)),
+            "camera_binning": _none_if_zero_int(int(camera_binning)),
+            "pixel_size": _none_if_zero_float(float(pixel_size)),
+        }
+        st.success("Saved global defaults for this intake session.")
+
 # ---- Experiment-level metadata + override-global expander ----
 if scope == "Experiment-level metadata":
     g = st.session_state.get("defaults_global", {})
+    meta_experiment_by_group = st.session_state.get("meta_experiment_by_group", {})
 
-    # Prefill from global defaults (but we will store only overrides if toggle enabled)
-    g_fluo = g.get("fluorescent_dye", "")
-    g_dye_val = g.get("dye_concentration_value", 0.0) or 0.0
-    g_obj = g.get("objective_magnification", 0.0) or 0.0
-    g_wl = g.get("laser_wavelength", 0.0) or 0.0
-    g_int = g.get("laser_intensity", 0.0) or 0.0
-    g_bin = g.get("camera_binning", 0) or 0
-    g_px = g.get("pixel_size", 0.0) or 0.0
+    experiment_groups = sorted(df["experiment_group"].dropna().unique().tolist())
+    if not experiment_groups:
+        st.warning("No experiment groups found. Make sure your scanned dataframe includes an 'experiment_group' column.")
+        st.stop()
 
-    with st.form("exp_meta_form", clear_on_submit=False):
-        st.subheader("Experiment-level metadata (applies to all files in this intake)")
+    selected_experiment_group = st.selectbox(
+        "Experiment group",
+        experiment_groups,
+        help="Metadata entered here will apply only to files in this experiment group."
+    )
+
+    existing_meta = meta_experiment_by_group.get(selected_experiment_group, {})
+
+    # Prefill from saved group metadata first, otherwise from global defaults
+    g_fluo = existing_meta.get("fluorescent_dye", g.get("fluorescent_dye", ""))
+    g_dye_val = existing_meta.get("dye_concentration_value", g.get("dye_concentration_value", 0.0) or 0.0)
+    g_obj = existing_meta.get("objective_magnification", g.get("objective_magnification", 0.0) or 0.0)
+    g_wl = existing_meta.get("laser_wavelength", g.get("laser_wavelength", 0.0) or 0.0)
+    g_int = existing_meta.get("laser_intensity", g.get("laser_intensity", 0.0) or 0.0)
+    g_bin = existing_meta.get("camera_binning", g.get("camera_binning", 0) or 0)
+    g_px = existing_meta.get("pixel_size", g.get("pixel_size", 0.0) or 0.0)
+
+    existing_capture_type = existing_meta.get("capture_type", "long")
+    capture_type_options = sorted(list(CAPTURE_TYPES))
+    default_capture_index = (
+        capture_type_options.index(existing_capture_type)
+        if existing_capture_type in capture_type_options
+        else (capture_type_options.index("long") if "long" in capture_type_options else 0)
+    )
+
+    with st.form(f"exp_meta_form_{selected_experiment_group}", clear_on_submit=False):
+        st.subheader(f"Experiment-level metadata for group: {selected_experiment_group}")
+
         c1, c2, c3 = st.columns(3)
 
         with c1:
-            date = st.text_input("date (YYYY-MM-DD)", value=datetime.now().date().isoformat())
-            replicate = st.number_input("replicate", min_value=1, step=1, value=1)
-            is_valid = st.checkbox("is_valid", value=True)
+            date = st.text_input(
+                "date (YYYY-MM-DD)",
+                value=existing_meta.get("date", datetime.now().date().isoformat())
+            )
+            replicate = st.number_input(
+                "replicate",
+                min_value=1,
+                step=1,
+                value=int(existing_meta.get("replicate", 1) or 1)
+            )
+            is_valid = st.checkbox(
+                "is_valid",
+                value=bool(existing_meta.get("is_valid", True))
+            )
 
         with c2:
-            #organism = st.text_input("organism", value="")
-            organism = st.selectbox("organism", ALLOWED_ORGANISMS, index=ALLOWED_ORGANISMS.index("yeast") if "yeast" in ALLOWED_ORGANISMS else 0)
-            protein = st.text_input("protein", value="")
-            strain = st.text_input("strain", value="")
-            
+            organism_options = sorted(list(ALLOWED_ORGANISMS))
+            existing_organism = existing_meta.get("organism", "yeast")
+            organism_index = organism_options.index(existing_organism) if existing_organism in organism_options else (organism_options.index("yeast") if "yeast" in organism_options else 0)
+            organism = st.selectbox("organism", organism_options, index=organism_index)
+
+            protein = st.text_input("protein", value=existing_meta.get("protein", ""))
+            strain = st.text_input("strain", value=existing_meta.get("strain", ""))
 
         with c3:
-            #capture_type = st.text_input("capture_type (fast/long/confocal…)", value="")
-            
-            capture_type = st.selectbox("capture_type", CAPTURE_TYPES, index=CAPTURE_TYPES.index("long") if "long" in CAPTURE_TYPES else 0)
-            exposure_time = st.number_input("exposure_time (s)", value=0.0, step=0.01)
-            time_interval = st.number_input("time_interval (s)", value=0.0, step=0.01)
+            capture_type = st.selectbox(
+                "capture_type",
+                capture_type_options,
+                index=default_capture_index,
+                key=f"capture_type_{selected_experiment_group}"
+            )
+            exposure_time = st.number_input(
+                "exposure_time (s)",
+                value=float(existing_meta.get("exposure_time", 0.0) or 0.0),
+                step=0.01
+            )
+            time_interval = st.number_input(
+                "time_interval (s)",
+                value=float(existing_meta.get("time_interval", 0.0) or 0.0),
+                step=0.01
+            )
 
         st.markdown("**Condition (optional, if untreated, select N/A):**")
 
         c4, c5, c6 = st.columns(3)
         with c4:
-            condition_name = st.text_input("condition_name", value="untreated")
+            condition_name = st.text_input(
+                "condition_name",
+                value=existing_meta.get("condition_name", "untreated")
+            )
 
         with c5:
-            is_na = st.checkbox("concentration value is not applicaple")
+            existing_concentration_value = existing_meta.get("concentration_value", 0.0) or 0.0
+            is_na_default = existing_meta.get("concentration_value") in (None, 0, 0.0)
+            is_na = st.checkbox(
+                "concentration value is not applicaple",
+                value=is_na_default,
+                key=f"is_na_{selected_experiment_group}"
+            )
             if is_na:
-                concentration_value = 0
+                concentration_value = 0.0
+                st.number_input(
+                    "concentration_value",
+                    value=0.0,
+                    step=0.1,
+                    disabled=True,
+                    key=f"concentration_value_disabled_{selected_experiment_group}"
+                )
             else:
-                concentration_value = st.number_input("concentration_value", value=0.0, step=0.1)
-        with c6:
-            #concentration_unit = st.text_input("concentration_unit", value="")
-            concentration_unit = st.selectbox("cconcentration_unit", CONDITION_UNITS, index=CONDITION_UNITS.index("uM") if "uM" in CAPTURE_TYPES else 0)
-            
+                concentration_value = st.number_input(
+                    "concentration_value",
+                    value=float(existing_concentration_value),
+                    step=0.1,
+                    key=f"concentration_value_enabled_{selected_experiment_group}"
+                )
 
+        with c6:
+            concentration_unit_options = sorted(list(CONDITION_UNITS))
+            existing_concentration_unit = existing_meta.get("concentration_unit", "uM")
+            concentration_unit_index = (
+                concentration_unit_options.index(existing_concentration_unit)
+                if existing_concentration_unit in concentration_unit_options
+                else (concentration_unit_options.index("uM") if "uM" in concentration_unit_options else 0)
+            )
+            concentration_unit = st.selectbox(
+                "concentration_unit",
+                concentration_unit_options,
+                index=concentration_unit_index
+            )
+
+        # confocal logic
+        disable_dye_conc = (capture_type == "confocal")
     
-        # ---- override global microscopy settings (per experiment) ----
 
         with st.expander("Microscopy settings (override global defaults for this experiment)", expanded=False):
-            enable_override = st.checkbox("Enable override for this experiment", value=False)
+            enable_override = st.checkbox(
+                "Enable override for this experiment",
+                value=False,
+                key=f"enable_override_{selected_experiment_group}"
+            )
 
-            fluorescent_dye = st.text_input("fluorescent_dye", value=g_fluo)
-            dye_concentration_value = st.number_input("dye_concentration_value (nM)", value=float(g_dye_val), step=0.1)
+            fluorescent_dye = st.text_input("fluorescent_dye", value=str(g_fluo or ""))
 
-            objective_magnification = st.number_input("objective_magnification (ex.:100)", value=float(g_obj), step=1.0)
-            laser_wavelength = st.number_input("laser_wavelength (nm)", value=float(g_wl), step=1.0)
-            laser_intensity = st.number_input("laser_intensity (%)", value=float(g_int), step=1.0)
-            camera_binning = st.number_input("camera_binning", value=int(g_bin), step=1)
-            pixel_size = st.number_input("pixel_size (microns)", value=float(g_px), step=0.01)
+            dye_concentration_value = st.number_input(
+                "dye_concentration_value (nM)",
+                value=float(g_dye_val or 0.0),
+                step=0.1,
+                disabled=disable_dye_conc,
+                help="Disabled for confocal capture type." if disable_dye_conc else None,
+                key=f"dye_concentration_value_{selected_experiment_group}"
+            )
 
-        comment = st.text_area("comment (optional)", height=80)
+            objective_magnification = st.number_input(
+                "objective_magnification (ex.:100)",
+                value=float(g_obj or 0.0),
+                step=1.0
+            )
+            laser_wavelength = st.number_input(
+                "laser_wavelength (nm)",
+                value=float(g_wl or 0.0),
+                step=1.0
+            )
+            laser_intensity = st.number_input(
+                "laser_intensity (%)",
+                value=float(g_int or 0.0),
+                step=1.0
+            )
+            camera_binning = st.number_input(
+                "camera_binning",
+                value=int(g_bin or 0),
+                step=1
+            )
+            pixel_size = st.number_input(
+                "pixel_size (microns)",
+                value=float(g_px or 0.0),
+                step=0.01
+            )
+
+        comment = st.text_area(
+            "comment (optional)",
+            value=existing_meta.get("comment", "") or "",
+            height=80
+        )
 
         submitted = st.form_submit_button("Save experiment metadata")
 
     if submitted:
         exp_meta: Dict[str, Any] = {
+            "experiment_group": selected_experiment_group,
             "date": _clean_str(date),
             "replicate": int(replicate) if replicate else None,
 
             "organism": _clean_str(organism),
             "protein": _clean_str(protein),
             "strain": _clean_str(strain),
-            
+
             "capture_type": _clean_str(capture_type),
             "exposure_time": _none_if_zero_float(float(exposure_time)),
             "time_interval": _none_if_zero_float(float(time_interval)),
 
             "condition_name": _clean_str(condition_name),
-            "concentration_value": _none_if_zero_float(float(concentration_value)),
+            "concentration_value": None if is_na else _none_if_zero_float(float(concentration_value)),
             "concentration_unit": _clean_str(concentration_unit),
 
             "is_valid": bool(is_valid),
             "comment": _none_if_blank(comment),
-            "experiment_path": str(root_str) if root_str else "",
+            "experiment_path": str(Path(root_str) / selected_experiment_group)  if root_str else "",
         }
-        # Only store override fields if toggle enabled AND value differs from global
+
         if enable_override:
             def maybe_set_override(key: str, val: Any, global_val: Any):
-                # treat "" and None as "not set"
                 if val in ("", None):
                     return
                 if global_val in ("", None) and val not in ("", None):
                     exp_meta[key] = val
                     return
-                # numeric comparisons
                 if isinstance(val, (int, float)) and isinstance(global_val, (int, float)):
                     if float(val) != float(global_val):
                         exp_meta[key] = val
@@ -683,17 +839,25 @@ if scope == "Experiment-level metadata":
                 if str(val) != str(global_val):
                     exp_meta[key] = val
 
-            maybe_set_override("fluorescent_dye", _clean_str(fluorescent_dye), g_fluo)
-            maybe_set_override("dye_concentration_value", _none_if_zero_float(float(dye_concentration_value)), g.get("dye_concentration_value"))
+            maybe_set_override("fluorescent_dye", _clean_str(fluorescent_dye), g.get("fluorescent_dye"))
+
+            if capture_type != "confocal":
+                maybe_set_override(
+                    "dye_concentration_value",
+                    _none_if_zero_float(float(dye_concentration_value)),
+                    g.get("dye_concentration_value"),
+                )
+            else:
+                exp_meta["dye_concentration_value"] = None
+
             maybe_set_override("objective_magnification", _none_if_zero_float(float(objective_magnification)), g.get("objective_magnification"))
             maybe_set_override("laser_wavelength", _none_if_zero_float(float(laser_wavelength)), g.get("laser_wavelength"))
             maybe_set_override("laser_intensity", _none_if_zero_float(float(laser_intensity)), g.get("laser_intensity"))
             maybe_set_override("camera_binning", _none_if_zero_int(int(camera_binning)), g.get("camera_binning"))
             maybe_set_override("pixel_size", _none_if_zero_float(float(pixel_size)), g.get("pixel_size"))
 
-        st.session_state["meta_experiment"] = exp_meta
-        st.success("Saved experiment metadata for this intake session.")
-
+        st.session_state["meta_experiment_by_group"][selected_experiment_group] = exp_meta
+        st.success(f"Saved experiment metadata for group: {selected_experiment_group}")
 
 # ---- Per-type defaults (raw/mask/tracking) ----
 if scope == "Per-type defaults":
@@ -707,14 +871,13 @@ if scope == "Per-type defaults":
 
     with tabs[0]:
         st.markdown("### Raw files defaults, to be developed")
-        # to be developed 
+
     with tabs[1]:
         st.markdown("### Mask defaults")
         with st.form("mask_defaults_form", clear_on_submit=False):
             segmentation_method = st.text_input("segmentation_method(ex. Cellpose)", value="")
-            #mask_type = st.text_input("mask_type (ex.:nuclear, cell)", value="")
-            mask_type = st.selectbox("mask_type", MASK_TYPES, index=MASK_TYPES.index("nucleus") if "nucleus" in MASK_TYPES else 0)
-            
+            mask_type_options = sorted(list(MASK_TYPES))
+            mask_type = st.selectbox("mask_type", mask_type_options, index=mask_type_options.index("nucleus") if "nucleus" in mask_type_options else 0)
 
             st.markdown("**Optional: Upload segmentation parameters JSON file**")
             uploaded = st.file_uploader("Segmentation parameters JSON", type=["json"])
@@ -740,7 +903,6 @@ if scope == "Per-type defaults":
     with tabs[2]:
         st.markdown("### Tracking defaults")
         with st.form("tracking_defaults_form", clear_on_submit=False):
-
             threshold = st.number_input("threshold", value=0.0, step=1.0)
             linking_distance = st.number_input("linking_distance (pixels)", value=0.0, step=1.0)
             gap_closing_distance = st.number_input("gap_closing_distance (pixels)", value=0.0, step=1.0)
@@ -766,11 +928,9 @@ if scope == "Per-type defaults":
                 "gap_closing_distance": _none_if_zero_float(float(gap_closing_distance)),
                 "max_frame_gap": None if max_frame_gap == -1 else int(max_frame_gap),
                 "trackmate_settings_json": trackmate_json_obj,
-                }
+            }
             st.success("Saved tracking defaults.")
-
-st.divider()
-
+#st.divider()
 # ---------------------------------------------
 # --- Step 5: Validate + export manifest ---
 # ---------------------------------------------
@@ -781,20 +941,19 @@ st.header("5) Validate & export manifest")
 issues = validate_manifest_df(df)
 
 defaults_global = st.session_state.get("defaults_global", {})
-meta_experiment = st.session_state.get("meta_experiment", {})
+meta_experiment_by_group = st.session_state.get("meta_experiment_by_group", {})
 defaults_by_type = st.session_state.get("defaults_by_type", {})
 
-if not meta_experiment:
-    st.warning("Experiment-level metadata not set (required).")
+active_df = df[df["data_type"] != "ignore"].copy()
+required_groups = set(active_df["experiment_group"].dropna().unique().tolist())
+saved_groups = set(meta_experiment_by_group.keys())
+missing_groups = sorted(required_groups - saved_groups)
 
-can_build_manifest = (not issues) and bool(meta_experiment)
+if missing_groups:
+    st.warning(f"Experiment-level metadata not set for these groups: {', '.join(missing_groups)}")
 
-# Optional: path existence validation for export
-require_path_exists_export = st.checkbox(
-    "Require file paths to exist (for validation)",
-    value=False,
-    help="Turn this on only if Streamlit is running on the same machine/mount as the experiment files.",
-)
+can_build_manifest = (not issues) and (len(missing_groups) == 0)
+
 
 manifest = None
 exp_issues = []
@@ -804,22 +963,13 @@ invalid_files_df = pd.DataFrame()
 if can_build_manifest:
     manifest = build_manifest(
         global_defaults=defaults_global,
-        experiment_meta=meta_experiment,
+        experiment_meta_by_group=meta_experiment_by_group,
         type_defaults=defaults_by_type,
         df=df,
     )
 
-    
-    #import data_validation_v2 as dv
-
     exp_issues, file_issues = validate_manifest(
-        manifest,
-        allowed_capture_types=CAPTURE_TYPES,
-        allowed_organisms=ALLOWED_ORGANISMS,
-        condition_units=CONDITION_UNITS,
-        mask_types=MASK_TYPES,
-        supported_exts=SUPPORTED_EXTS,
-        require_path_exists=require_path_exists_export,
+        manifest
     )
 
     if file_issues:
@@ -838,14 +988,19 @@ if issues:
 else:
     st.success("File classification looks good.")
 
+# --- Show missing experiment metadata by group ---
+if missing_groups:
+    st.error("Experiment metadata is missing for one or more experiment groups.")
+else:
+    st.success("Experiment metadata exists for all experiment groups.")
+
 # --- Show experiment-level blockers ---
 if can_build_manifest and exp_issues:
-    
     st.error("Experiment-level validation failed (must fix before export/insert):")
     for x in exp_issues:
         st.write(f"- {x}")
-else:
-        st.success("Experiment-level metadata validated.")
+elif can_build_manifest:
+    st.success("Experiment-level metadata validated.")
 
 # --- Show file-level invalids (soft blockers) ---
 if can_build_manifest and (not invalid_files_df.empty):
@@ -858,6 +1013,7 @@ if can_build_manifest and (not invalid_files_df.empty):
             file_name="manifest_invalid_file_rows.csv",
             mime="text/csv",
         )
+
 st.subheader("Summary")
 
 col1, col2, col3 = st.columns(3)
@@ -871,10 +1027,15 @@ with col1:
 with col2:
     st.markdown("**Validation overview**")
     st.write({
+        "experiment_groups_found": len(required_groups),
+        "experiment_groups_with_metadata": len(saved_groups),
+        "missing_experiment_groups": len(missing_groups),
         "experiment_issues": len(exp_issues),
         "file_issues": len(file_issues),
     })
-can_export = bool(manifest) and (not issues) and (not exp_issues) and (not file_issues)
+
+can_export = bool(manifest) and (not issues) and (len(missing_groups) == 0) and (not exp_issues) and (not file_issues)
+
 # --- Export readiness ---
 with col3:
     st.markdown("**Status**")
@@ -884,19 +1045,19 @@ with col3:
         st.warning("Not ready")
 
 if manifest:
-    with st.expander("Preview resolved manifest "):
+    with st.expander("Preview resolved manifest"):
         resolved_df = pd.json_normalize(manifest["files_resolved"])
-        # also show the validation status for each file in the preview
         if file_issues:
             issues_by_path = {x.get("path"): x.get("issues", []) for x in file_issues}
-            resolved_df["validation_issues"] = resolved_df["path"].map(issues_by_path).apply(lambda x: "; ".join(x) if isinstance(x, list) else "")
+            resolved_df["validation_issues"] = resolved_df["path"].map(issues_by_path).apply(
+                lambda x: "; ".join(x) if isinstance(x, list) else ""
+            )
         st.dataframe(resolved_df, use_container_width=True, hide_index=True)
 # Export allowed if:
 # - classification ok
 # - experiment metadata ok
 # - experiment-level validation ok
 # (file-level issues do NOT block export)
-
 
 if can_export:
     st.success("Manifest is valid to export.")
@@ -910,7 +1071,6 @@ if can_export:
         type="primary",
     )
 
-    #resolved_df = pd.json_normalize(manifest["files_resolved"])
     st.download_button(
         "Download resolved_files.csv",
         data=resolved_df.to_csv(index=False),
@@ -920,7 +1080,6 @@ if can_export:
 else:
     st.info("Fix the issues above to enable export.")
 
-    
 # -----------------------------------------------------
 # ------ Step 6) Insert into database --------
 # -----------------------------------------------------
@@ -930,7 +1089,7 @@ st.header("6) Insert into database (optional)")
 # --- DB path ---
 
 cfg = load_config()
-db_path_input = cfg.get("db_path", "")
+db_path_input = getattr(cfg, "db_path", "")
 # ------------- Select manifest source -----------------
 source = st.radio(
     "Manifest source",
@@ -969,7 +1128,6 @@ mode = st.selectbox(
 allow_partial = st.checkbox("Allow partial insert (skip invalid files)", value=True)
 require_path_exists = st.checkbox("Require file paths to exist on server", value=True)
 
-
 colA, colB = st.columns([1, 1])
 with colA:
     insert_disabled = (not db_path_input.strip()) or (manifest_candidate is None)
@@ -980,7 +1138,6 @@ with colA:
                 manifest_candidate,
                 db_path_input.strip(),
                 allow_partial_files=allow_partial,
-                require_path_exists=require_path_exists,
                 duplicate_mode=mode,
             )
             st.session_state["last_insert_report"] = report
@@ -998,7 +1155,18 @@ report = st.session_state.get("last_insert_report")
 if report:
     status = report.get("status")
     if status == "ok":
-        st.success(f"Inserted. Experiment ID: {report.get('experiment_id')}")
+        st.success("Inserted successfully.")
+
+        exp_ids_by_group = report.get("experiment_ids_by_group", {}) or {}
+        if exp_ids_by_group:
+            st.write("Experiment IDs by group:")
+            st.dataframe(
+                pd.DataFrame(
+                    [{"experiment_group": k, "experiment_id": v} for k, v in exp_ids_by_group.items()]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
     elif status == "failed_validation":
         st.error("Validation failed. Nothing was inserted.")
     else:

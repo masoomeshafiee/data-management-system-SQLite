@@ -119,16 +119,8 @@ def main():
         st.write("Select a page from the sidebar.")
     elif page == "Data Intake":
         st.switch_page("pages/data_intake.py")
-    elif page == "Create Experiment":
-        page_create_experiment(conn)
-    elif page == "Update data":
-        page_placeholder("Update Experiment")
-    elif page == "Delete data":
-        page_placeholder("Delete Experiment")
-    elif page == "Attach Files":
-        page_placeholder("Attach Files")
-    elif page == "Edit":
-        page_placeholder("Edit")
+    elif page == "Analytics":
+        page_placeholder("Analytics")
     elif page == "Admin":
         page_placeholder("Admin")
     elif page == "Browse/Search":

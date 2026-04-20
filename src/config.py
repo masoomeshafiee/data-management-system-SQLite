@@ -10,8 +10,7 @@ from typing import Dict, FrozenSet, List
 import re
 
 
-
-SHAREPOINT_SYNC_ROOT = Path("/Users/labuser/SharePoint/").resolve()
+SHAREPOINT_SYNC_ROOT = (Path.home() / "McGill University" / "Reyes Lab_Group - Microscopy Data").resolve()
 
 # ===============================
 # General app configuration
@@ -21,19 +20,15 @@ SHAREPOINT_SYNC_ROOT = Path("/Users/labuser/SharePoint/").resolve()
 class AppConfig:
     app_name: str = "Reyes Lab Data Manager"
     db_path: str = "app_database.db"
-    debug_mode: bool = False    
-    # Add other configuration parameters as needed
+    debug_mode: bool = False
 
 def load_config() -> AppConfig:
-    # Put your DB path in an env var on the lab PC
     app_name = os.environ.get("DB_APP_NAME", "Reyes Lab Data Manager")
-    db_path = os.environ.get("DB_PATH", st.secrets.get("DB_PATH", "../db/Reyes_lab_data.db"))
+    project_root = Path(__file__).resolve().parents[1]
+    db_path = str((project_root / "database" / "Reyes_lab_data.db").resolve())
     debug_mode = os.environ.get("DB_APP_DEBUG_MODE", "False").lower() in ("true", "1", "t")
 
     return AppConfig(app_name=app_name, db_path=db_path, debug_mode=debug_mode)
-
-
-
 
 # =========================================================
 # Data intake/ validation Config / constants

@@ -7,6 +7,8 @@ import os
 import re
 from pathlib import Path
 from services.data_validation import validate_manifest
+from collections import defaultdict
+from typing import Any, Dict
 
 from db.connection import get_conn
 from queries.queries_utils import  build_where
@@ -211,7 +213,7 @@ def insert_update_or_skip(
 # -----------------------
 # Main: manifest insertion
 # -----------------------
-def insert_manifest(manifest: Dict[str, Any], db_path: str, *, allow_partial_files: bool = True,
+def insert_manifest_v1(manifest: Dict[str, Any], db_path: str, *, allow_partial_files: bool = True,
     require_path_exists: bool = True, duplicate_mode: str = "strict") -> Dict[str, Any]:
     """
     Inserts a single manifest into the DB.
@@ -574,3 +576,220 @@ def _insert_analysis(cur: sqlite3.Cursor, experiment_id: int, f: Dict[str, Any],
         
     return result
     
+
+
+
+def insert_manifest(
+    manifest: Dict[str, Any],
+    db_path: str,
+    *,
+    allow_partial_files: bool = True,
+    duplicate_mode: str = "strict",
+) -> Dict[str, Any]:
+    """
+    Inserts a multi-experiment manifest into the DB.
+    Returns a report dict (always).
+    """
+    if duplicate_mode not in ("strict", "upsert"):
+        raise ValueError("duplicate_mode must be 'strict' or 'upsert'")
+
+    # ---- Validate (ALWAYS) ----
+    exp_issues, file_issues = validate_manifest(
+        manifest,
+    )
+
+    report = {
+        "status": "ok",
+        "mode": duplicate_mode,
+        "experiment_ids_by_group": {},
+        "counts": {
+            "inserted": {"raw": 0, "tracking": 0, "mask": 0, "analysis": 0},
+            "updated": {"raw": 0, "tracking": 0, "mask": 0, "analysis": 0},
+        },
+        "skipped": [],
+        "validation": {
+            "experiment_issues": exp_issues,
+            "file_issue_count": len(file_issues),
+        },
+    }
+
+    if exp_issues:
+        report["status"] = "failed_validation"
+        return report
+
+    if (not allow_partial_files) and file_issues:
+        report["status"] = "failed_validation"
+        for x in file_issues:
+            report["skipped"].append({
+                "status": "skipped",
+                "reason": "validation_failed: " + "; ".join(x["issues"]),
+                "existing_id": None,
+                "table": None,
+                "unique_fields": None,
+                "context": {
+                    "experiment_group": x.get("experiment_group"),
+                    "data_type": x["data_type"],
+                    "file_name": x["file_name"],
+                    "path": x["path"],
+                },
+            })
+        return report
+
+    invalid_paths = {x.get("path") for x in file_issues if x.get("path")}
+    for x in file_issues:
+        report["skipped"].append({
+            "status": "skipped",
+            "reason": "validation_failed: " + "; ".join(x["issues"]),
+            "existing_id": None,
+            "table": None,
+            "unique_fields": None,
+            "context": {
+                "experiment_group": x.get("experiment_group"),
+                "data_type": x["data_type"],
+                "file_name": x["file_name"],
+                "path": x["path"],
+            },
+        })
+
+    g = manifest.get("global_defaults") or {}
+    exp_by_group = manifest.get("experiment_metadata_by_group") or {}
+    files = manifest.get("files_resolved") or []
+
+    if not exp_by_group:
+        logger.error("Manifest missing 'experiment_metadata_by_group'.")
+        raise ValueError("Manifest missing 'experiment_metadata_by_group'.")
+
+    if not files:
+        logger.error("Manifest has no 'files_resolved' rows.")
+        raise ValueError("Manifest has no 'files_resolved' rows.")
+
+    files_by_group = defaultdict(list)
+    for f in files:
+        group = f.get("experiment_group")
+        if not group:
+            continue
+        if f.get("path") in invalid_paths:
+            continue
+        files_by_group[group].append(f)
+
+    conn = get_conn(db_path)
+    cur = conn.cursor()
+
+    try:
+        conn.execute("BEGIN;")
+
+        # global/shared lookup
+        user_id = get_or_create_id(cur, "User", {
+            "user_name": norm_text(g.get("user_name")),
+            "last_name": norm_text(g.get("user_last_name")),
+            "email": norm_text(g.get("user_email")),
+        })
+
+        for group, group_files in files_by_group.items():
+            exp = exp_by_group.get(group) or {}
+            if not exp:
+                raise ValueError(f"Missing experiment metadata for group '{group}'.")
+
+            organism_id = get_or_create_id(cur, "Organism", {
+                "organism_name": norm_text(exp.get("organism"))
+            })
+            protein_id = get_or_create_id(cur, "Protein", {
+                "protein_name": norm_text(exp.get("protein"))
+            })
+            strain_id = get_or_create_id(cur, "StrainOrCellLine", {
+                "strain_name": norm_text(exp.get("strain"))
+            })
+
+            condition_id = get_or_create_id(cur, "Condition", {
+                "condition_name": norm_text(exp.get("condition_name")),
+                "concentration_value": norm_float(exp.get("concentration_value")),
+                "concentration_unit": norm_text(exp.get("concentration_unit")),
+            })
+
+            capture_setting_id = get_or_create_id(cur, "CaptureSetting", {
+                "capture_type": norm_text(exp.get("capture_type")),
+                "exposure_time": norm_float(exp.get("exposure_time")),
+                "time_interval": norm_float(exp.get("time_interval")),
+                "fluorescent_dye": norm_text(exp.get("fluorescent_dye") or g.get("fluorescent_dye")),
+                "dye_concentration_value": norm_float(exp.get("dye_concentration_value") if exp.get("dye_concentration_value") is not None else g.get("dye_concentration_value")),
+                "laser_wavelength": norm_float(exp.get("laser_wavelength") if exp.get("laser_wavelength") is not None else g.get("laser_wavelength")),
+                "laser_intensity": norm_float(exp.get("laser_intensity") if exp.get("laser_intensity") is not None else g.get("laser_intensity")),
+                "camera_binning": norm_int(exp.get("camera_binning") if exp.get("camera_binning") is not None else g.get("camera_binning")),
+                "objective_magnification": norm_float(exp.get("objective_magnification") if exp.get("objective_magnification") is not None else g.get("objective_magnification")),
+                "pixel_size": norm_float(exp.get("pixel_size") if exp.get("pixel_size") is not None else g.get("pixel_size")),
+            })
+
+            experiment_lookup = {
+                "organism_id": organism_id,
+                "protein_id": protein_id,
+                "strain_id": strain_id,
+                "condition_id": condition_id,
+                "capture_setting_id": capture_setting_id,
+                "user_id": user_id,
+                "date": norm_text(exp.get("date")),
+                "replicate": norm_int(exp.get("replicate")),
+            }
+
+            where_sql, where_vals = build_where(experiment_lookup)
+            cur.execute(f"SELECT id FROM Experiment WHERE {where_sql}", where_vals)
+            row = cur.fetchone()
+
+            if row:
+                experiment_id = int(row[0])
+            else:
+                insert_fields = dict(experiment_lookup)
+                insert_fields.update({
+                    "is_valid": int(bool(exp.get("is_valid", True))),
+                    "comment": norm_text(exp.get("comment")),
+                    "experiment_path": norm_text(exp.get("experiment_path")),
+                })
+                cols = ", ".join(insert_fields.keys())
+                placeholders = ", ".join(["?"] * len(insert_fields))
+                cur.execute(
+                    f"INSERT INTO Experiment ({cols}) VALUES ({placeholders})",
+                    list(insert_fields.values())
+                )
+                experiment_id = int(cur.lastrowid)
+
+            report["experiment_ids_by_group"][group] = experiment_id
+
+            for f in group_files:
+                dt = f.get("data_type")
+
+                if dt == "raw":
+                    outcome = _insert_raw(cur, experiment_id, f, duplicate_mode)
+                elif dt == "tracking":
+                    outcome = _insert_tracking(cur, experiment_id, f, duplicate_mode)
+                elif dt == "mask":
+                    outcome = _insert_mask(cur, experiment_id, f, duplicate_mode)
+                elif dt in ("analysis", "batch_analysis", "plot", "config"):
+                    outcome = _insert_analysis(cur, experiment_id, f, duplicate_mode)
+                else:
+                    continue
+
+                bucket = "analysis" if dt in ("analysis", "batch_analysis", "plot", "config") else dt
+
+                if outcome["status"] == "inserted":
+                    report["counts"]["inserted"][bucket] += 1
+                    logger.info(f"Inserted {bucket} file in group '{group}': {outcome['context']}")
+                elif outcome["status"] == "updated":
+                    report["counts"]["updated"][bucket] += 1
+                    logger.info(f"Updated existing {bucket} file in group '{group}': {outcome['context']}")
+                else:
+                    report["skipped"].append(outcome)
+                    logger.info(f"Skipped {bucket} file in group '{group}': {outcome['context']}")
+
+        conn.commit()
+        logger.info("Data was successfully inserted into the DB.")
+        report["status"] = "ok"
+        return report
+
+    except Exception as e:
+        conn.rollback()
+        report["status"] = "failed_exception"
+        report["error"] = str(e)
+        raise
+
+    finally:
+        conn.close()
+
