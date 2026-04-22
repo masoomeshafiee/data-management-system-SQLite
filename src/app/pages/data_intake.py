@@ -197,6 +197,69 @@ def validate_manifest_df(df: pd.DataFrame) -> List[str]:
 
     return issues
 
+def serialize_intake_draft() -> Dict[str, Any]:
+    """
+    Serialize the current intake session into a JSON-safe dict.
+    """
+    df = st.session_state.get("intake_df", pd.DataFrame())
+
+    return {
+        "intake_root": st.session_state.get("intake_root"),
+        "intake_df": df.to_dict(orient="records") if not df.empty else [],
+        "defaults_global": st.session_state.get("defaults_global", {}),
+        "meta_experiment_by_group": st.session_state.get("meta_experiment_by_group", {}),
+        "defaults_by_type": st.session_state.get("defaults_by_type", {}),
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "draft_version": 1,
+    }
+
+
+def load_intake_draft(draft: Dict[str, Any]) -> None:
+    """
+    Restore a previously saved intake draft into Streamlit session_state.
+    """
+    st.session_state["intake_root"] = draft.get("intake_root")
+
+    intake_df_records = draft.get("intake_df", [])
+    #st.session_state["intake_df"] = pd.DataFrame(intake_df_records)
+    df = pd.DataFrame(intake_df_records)
+
+    expected_cols = [
+        "relative_folder",
+        "experiment_group",
+        "file_name",
+        "ext",
+        "full_path",
+        "size_mb",
+        "modified",
+        "suggested_data_type",
+        "data_type",
+        "file_overrides_json",
+        "ov_threshold",
+        "ov_linking_distance",
+        "ov_gap_closing_distance",
+        "ov_max_frame_gap",
+        "ov_segmentation_method",
+        "ov_segmentation_parameters",
+        "ov_mask_type",
+    ]
+
+    for col in expected_cols:
+        if col not in df.columns:
+            df[col] = None
+
+    st.session_state["intake_df"] = df
+
+    st.session_state["defaults_global"] = draft.get("defaults_global", {})
+    st.session_state["meta_experiment_by_group"] = draft.get("meta_experiment_by_group", {})
+    st.session_state["defaults_by_type"] = draft.get("defaults_by_type", {})
+
+
+def save_intake_draft_to_session() -> None:
+    """
+    Keep a snapshot in session_state as a convenience backup.
+    """
+    st.session_state["intake_draft"] = serialize_intake_draft()
 
 # -----------------------------
 # Data classes for metadata
@@ -426,6 +489,7 @@ if scan:
 
     st.session_state["intake_root"] = str(root)
     st.session_state["intake_df"] = df
+    save_intake_draft_to_session()
 
 # Load existing scan from session
 df: pd.DataFrame = st.session_state.get("intake_df", pd.DataFrame())
@@ -437,6 +501,44 @@ if df.empty:
 
 st.success(f"Found {len(df)} file(s) under: {root_str}")
 
+# ---------------------------------------------
+# ---- Step 1.5: Draft session save/load ---
+# ---------------------------------------------
+st.header("Draft session")
+st.caption("Save your current intake work as a draft JSON, or load a previous draft to continue without redoing annotation.")
+
+dcol1, dcol2 = st.columns(2)
+
+with dcol1:
+    draft_payload = serialize_intake_draft()
+    draft_json = json.dumps(draft_payload, indent=2, default=str)
+
+    st.download_button(
+        "Download intake draft JSON",
+        data=draft_json,
+        file_name="intake_draft.json",
+        mime="application/json",
+    )
+
+with dcol2:
+    uploaded_draft = st.file_uploader("Load intake draft JSON", type=["json"], key="draft_uploader")
+    if uploaded_draft is not None:
+        try:
+            loaded_draft = json.loads(uploaded_draft.read().decode("utf-8"))
+            load_intake_draft(loaded_draft)
+            st.success("Draft loaded successfully.")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Could not load draft JSON: {e}")
+
+session_draft = st.session_state.get("intake_draft")
+
+if session_draft:
+    if st.button("Restore latest in-session draft snapshot"):
+        load_intake_draft(session_draft)
+        st.caption("Loading a draft will replace the current intake session in memory.")
+        st.success("Restored latest in-session draft snapshot.")
+        st.rerun()
 # ----------------------------------------------
 # --- Step 2: Classification rules ---
 # ----------------------------------------------
@@ -457,6 +559,7 @@ with colA:
     if st.button("Apply folder rule"):
         df = apply_folder_rule(df, selected_folder, folder_role)
         st.session_state["intake_df"] = df
+        save_intake_draft_to_session()
 
 with colB:
     st.subheader("Assign by extension")
@@ -472,6 +575,7 @@ with colB:
     if st.button("Apply extension rule"):
         df = apply_ext_rule(df, selected_ext, ext_role)
         st.session_state["intake_df"] = df
+        save_intake_draft_to_session()
 
 st.divider()
 
@@ -556,13 +660,16 @@ for col in (["data_type"] + override_cols):
     if col in edited_df.columns:
         df.loc[edited_df.index, col] = edited_df[col]
 
+st.session_state["intake_df"] = df
+save_intake_draft_to_session()
+
 st.divider()
 
 # ----------------------------------------------
 # --- Step 4: Metadata defaults & scope ---
 # ----------------------------------------------
 
-st.header("4) Optional Metadata Defaults (Can be modified later in the workflow)")
+st.header("4) Metadata Defaults")
 
 scope = st.radio(
     "Which metadata level are you focusing on right now?",
@@ -578,25 +685,53 @@ if "meta_experiment_by_group" not in st.session_state:
 # ---- Global defaults form ----
 
 if scope == "Global defaults":
+    g = st.session_state.get("defaults_global", {})
+    if g:
+        st.caption("Saved global defaults loaded into the form. You can edit and resave them.")
+
     with st.form("global_defaults_form", clear_on_submit=False):
-        st.subheader("Global defaults (optional)")
+        st.subheader("Global defaults")
         c1, c2, c3 = st.columns(3)
 
         with c1:
-            user_name = st.text_input("user_name")
-            user_last_name = st.text_input("user_last_name")
-            user_email = st.text_input("user_email")
+            user_name = st.text_input("user_name", value=g.get("user_name", "") or "")
+            user_last_name = st.text_input("user_last_name", value=g.get("user_last_name", "") or "")
+            user_email = st.text_input("user_email", value=g.get("user_email", "") or "")
 
         with c2:
-            fluorescent_dye = st.text_input("fluorescent_dye")
-            dye_concentration_value = st.number_input("dye_concentration_value (nM)", value=0.0, step=0.1)
+            fluorescent_dye = st.text_input("fluorescent_dye", value=g.get("fluorescent_dye", "") or "")
+            dye_concentration_value = st.number_input(
+                "dye_concentration_value (nM)",
+                value=float(g.get("dye_concentration_value", 0.0) or 0.0),
+                step=0.1,
+            )
 
         with c3:
-            objective_magnification = st.number_input("objective_magnification (ex. 100)", value=0.0, step=1.0)
-            laser_wavelength = st.number_input("laser_wavelength (nm)", value=0.0, step=1.0)
-            laser_intensity = st.number_input("laser_intensity (%)", value=0.0, step=1.0)
-            camera_binning = st.number_input("camera_binning", value=1, step=1)
-            pixel_size = st.number_input("pixel_size (microns)", value=0.0, step=0.01)
+            objective_magnification = st.number_input(
+                "objective_magnification (ex. 100)",
+                value=float(g.get("objective_magnification", 0.0) or 0.0),
+                step=1.0,
+            )
+            laser_wavelength = st.number_input(
+                "laser_wavelength (nm)",
+                value=float(g.get("laser_wavelength", 0.0) or 0.0),
+                step=1.0,
+            )
+            laser_intensity = st.number_input(
+                "laser_intensity (%)",
+                value=float(g.get("laser_intensity", 0.0) or 0.0),
+                step=1.0,
+            )
+            camera_binning = st.number_input(
+                "camera_binning",
+                value=int(g.get("camera_binning", 1) or 1),
+                step=1,
+            )
+            pixel_size = st.number_input(
+                "pixel_size (microns)",
+                value=float(g.get("pixel_size", 0.0) or 0.0),
+                step=0.01,
+            )
 
         submitted = st.form_submit_button("Save global metadata defaults")
 
@@ -613,8 +748,9 @@ if scope == "Global defaults":
             "camera_binning": _none_if_zero_int(int(camera_binning)),
             "pixel_size": _none_if_zero_float(float(pixel_size)),
         }
+        save_intake_draft_to_session()
         st.success("Saved global defaults for this intake session.")
-
+        
 # ---- Experiment-level metadata + override-global expander ----
 if scope == "Experiment-level metadata":
     g = st.session_state.get("defaults_global", {})
@@ -633,15 +769,6 @@ if scope == "Experiment-level metadata":
 
     existing_meta = meta_experiment_by_group.get(selected_experiment_group, {})
 
-    # Prefill from saved group metadata first, otherwise from global defaults
-    g_fluo = existing_meta.get("fluorescent_dye", g.get("fluorescent_dye", ""))
-    g_dye_val = existing_meta.get("dye_concentration_value", g.get("dye_concentration_value", 0.0) or 0.0)
-    g_obj = existing_meta.get("objective_magnification", g.get("objective_magnification", 0.0) or 0.0)
-    g_wl = existing_meta.get("laser_wavelength", g.get("laser_wavelength", 0.0) or 0.0)
-    g_int = existing_meta.get("laser_intensity", g.get("laser_intensity", 0.0) or 0.0)
-    g_bin = existing_meta.get("camera_binning", g.get("camera_binning", 0) or 0)
-    g_px = existing_meta.get("pixel_size", g.get("pixel_size", 0.0) or 0.0)
-
     existing_capture_type = existing_meta.get("capture_type", "long")
     capture_type_options = sorted(list(CAPTURE_TYPES))
     default_capture_index = (
@@ -650,9 +777,15 @@ if scope == "Experiment-level metadata":
         else (capture_type_options.index("long") if "long" in capture_type_options else 0)
     )
 
-    with st.form(f"exp_meta_form_{selected_experiment_group}", clear_on_submit=False):
-        st.subheader(f"Experiment-level metadata for group: {selected_experiment_group}")
+    live_capture_key = f"live_capture_type_{selected_experiment_group}"
+    if live_capture_key not in st.session_state:
+        st.session_state[live_capture_key] = existing_capture_type
 
+    st.subheader(f"Experiment-level metadata for group: {selected_experiment_group}")
+    if existing_meta:
+        st.caption("Saved experiment metadata loaded into the form. You can edit and resave it.")
+
+    with st.form(f"exp_meta_form_{selected_experiment_group}", clear_on_submit=False):
         c1, c2, c3 = st.columns(3)
 
         with c1:
@@ -674,18 +807,22 @@ if scope == "Experiment-level metadata":
         with c2:
             organism_options = sorted(list(ALLOWED_ORGANISMS))
             existing_organism = existing_meta.get("organism", "yeast")
-            organism_index = organism_options.index(existing_organism) if existing_organism in organism_options else (organism_options.index("yeast") if "yeast" in organism_options else 0)
+            organism_index = (
+                organism_options.index(existing_organism)
+                if existing_organism in organism_options
+                else (organism_options.index("yeast") if "yeast" in organism_options else 0)
+            )
             organism = st.selectbox("organism", organism_options, index=organism_index)
 
-            protein = st.text_input("protein", value=existing_meta.get("protein", ""))
-            strain = st.text_input("strain", value=existing_meta.get("strain", ""))
+            protein = st.text_input("protein", value=existing_meta.get("protein", "") or "")
+            strain = st.text_input("strain", value=existing_meta.get("strain", "") or "")
 
         with c3:
             capture_type = st.selectbox(
                 "capture_type",
                 capture_type_options,
                 index=default_capture_index,
-                key=f"capture_type_{selected_experiment_group}"
+                key=live_capture_key
             )
             exposure_time = st.number_input(
                 "exposure_time (s)",
@@ -704,7 +841,7 @@ if scope == "Experiment-level metadata":
         with c4:
             condition_name = st.text_input(
                 "condition_name",
-                value=existing_meta.get("condition_name", "untreated")
+                value=existing_meta.get("condition_name", "untreated") or "untreated"
             )
 
         with c5:
@@ -746,54 +883,6 @@ if scope == "Experiment-level metadata":
                 index=concentration_unit_index
             )
 
-        # confocal logic
-        disable_dye_conc = (capture_type == "confocal")
-    
-
-        with st.expander("Microscopy settings (override global defaults for this experiment)", expanded=False):
-            enable_override = st.checkbox(
-                "Enable override for this experiment",
-                value=False,
-                key=f"enable_override_{selected_experiment_group}"
-            )
-
-            fluorescent_dye = st.text_input("fluorescent_dye", value=str(g_fluo or ""))
-
-            dye_concentration_value = st.number_input(
-                "dye_concentration_value (nM)",
-                value=float(g_dye_val or 0.0),
-                step=0.1,
-                disabled=disable_dye_conc,
-                help="Disabled for confocal capture type." if disable_dye_conc else None,
-                key=f"dye_concentration_value_{selected_experiment_group}"
-            )
-
-            objective_magnification = st.number_input(
-                "objective_magnification (ex.:100)",
-                value=float(g_obj or 0.0),
-                step=1.0
-            )
-            laser_wavelength = st.number_input(
-                "laser_wavelength (nm)",
-                value=float(g_wl or 0.0),
-                step=1.0
-            )
-            laser_intensity = st.number_input(
-                "laser_intensity (%)",
-                value=float(g_int or 0.0),
-                step=1.0
-            )
-            camera_binning = st.number_input(
-                "camera_binning",
-                value=int(g_bin or 0),
-                step=1
-            )
-            pixel_size = st.number_input(
-                "pixel_size (microns)",
-                value=float(g_px or 0.0),
-                step=0.01
-            )
-
         comment = st.text_area(
             "comment (optional)",
             value=existing_meta.get("comment", "") or "",
@@ -802,61 +891,188 @@ if scope == "Experiment-level metadata":
 
         submitted = st.form_submit_button("Save experiment metadata")
 
+    # -----------------------------
+    # Live override UI OUTSIDE form
+    # -----------------------------
+    current_capture_type = st.session_state.get(live_capture_key, existing_capture_type)
+    disable_dye_conc = (current_capture_type == "confocal")
+
+    with st.expander("Microscopy settings (override global defaults for this experiment)", expanded=False):
+        override_keys = {
+            "fluorescent_dye",
+            "dye_concentration_value",
+            "objective_magnification",
+            "laser_wavelength",
+            "laser_intensity",
+            "camera_binning",
+            "pixel_size",
+        }
+        has_saved_override = any(k in existing_meta for k in override_keys)
+
+        enable_override = st.checkbox(
+            "Enable experiment-specific microscopy overrides",
+            value=has_saved_override,
+            key=f"enable_override_{selected_experiment_group}"
+        )
+
+        if enable_override:
+            st.caption("Only fields checked below will override the global defaults for this experiment.")
+
+            ov_fluorescent_dye = st.checkbox(
+                "Override fluorescent_dye",
+                value=("fluorescent_dye" in existing_meta),
+                key=f"ov_fluorescent_dye_{selected_experiment_group}"
+            )
+            fluorescent_dye = st.text_input(
+                "fluorescent_dye",
+                value=str(existing_meta.get("fluorescent_dye", g.get("fluorescent_dye", "")) or ""),
+                disabled=not ov_fluorescent_dye,
+                key=f"fluorescent_dye_{selected_experiment_group}"
+            )
+
+            ov_dye_concentration_value = st.checkbox(
+                "Override dye_concentration_value",
+                value=("dye_concentration_value" in existing_meta),
+                disabled=disable_dye_conc,
+                key=f"ov_dye_concentration_value_{selected_experiment_group}"
+            )
+            dye_concentration_value = st.number_input(
+                "dye_concentration_value (nM)",
+                value=float(existing_meta.get("dye_concentration_value", g.get("dye_concentration_value", 0.0)) or 0.0),
+                step=0.1,
+                disabled=(not ov_dye_concentration_value) or disable_dye_conc,
+                help="Disabled for confocal capture type." if disable_dye_conc else None,
+                key=f"dye_concentration_value_{selected_experiment_group}"
+            )
+
+            ov_objective_magnification = st.checkbox(
+                "Override objective_magnification",
+                value=("objective_magnification" in existing_meta),
+                key=f"ov_objective_magnification_{selected_experiment_group}"
+            )
+            objective_magnification = st.number_input(
+                "objective_magnification (ex.:100)",
+                value=float(existing_meta.get("objective_magnification", g.get("objective_magnification", 0.0)) or 0.0),
+                step=1.0,
+                disabled=not ov_objective_magnification,
+                key=f"objective_magnification_{selected_experiment_group}"
+            )
+
+            ov_laser_wavelength = st.checkbox(
+                "Override laser_wavelength",
+                value=("laser_wavelength" in existing_meta),
+                key=f"ov_laser_wavelength_{selected_experiment_group}"
+            )
+            laser_wavelength = st.number_input(
+                "laser_wavelength (nm)",
+                value=float(existing_meta.get("laser_wavelength", g.get("laser_wavelength", 0.0)) or 0.0),
+                step=1.0,
+                disabled=not ov_laser_wavelength,
+                key=f"laser_wavelength_{selected_experiment_group}"
+            )
+
+            ov_laser_intensity = st.checkbox(
+                "Override laser_intensity",
+                value=("laser_intensity" in existing_meta),
+                key=f"ov_laser_intensity_{selected_experiment_group}"
+            )
+            laser_intensity = st.number_input(
+                "laser_intensity (%)",
+                value=float(existing_meta.get("laser_intensity", g.get("laser_intensity", 0.0)) or 0.0),
+                step=1.0,
+                disabled=not ov_laser_intensity,
+                key=f"laser_intensity_{selected_experiment_group}"
+            )
+
+            ov_camera_binning = st.checkbox(
+                "Override camera_binning",
+                value=("camera_binning" in existing_meta),
+                key=f"ov_camera_binning_{selected_experiment_group}"
+            )
+            camera_binning = st.number_input(
+                "camera_binning",
+                value=int(existing_meta.get("camera_binning", g.get("camera_binning", 0)) or 0),
+                step=1,
+                disabled=not ov_camera_binning,
+                key=f"camera_binning_{selected_experiment_group}"
+            )
+
+            ov_pixel_size = st.checkbox(
+                "Override pixel_size",
+                value=("pixel_size" in existing_meta),
+                key=f"ov_pixel_size_{selected_experiment_group}"
+            )
+            pixel_size = st.number_input(
+                "pixel_size (microns)",
+                value=float(existing_meta.get("pixel_size", g.get("pixel_size", 0.0)) or 0.0),
+                step=0.01,
+                disabled=not ov_pixel_size,
+                key=f"pixel_size_{selected_experiment_group}"
+            )
+        else:
+            ov_fluorescent_dye = False
+            ov_dye_concentration_value = False
+            ov_objective_magnification = False
+            ov_laser_wavelength = False
+            ov_laser_intensity = False
+            ov_camera_binning = False
+            ov_pixel_size = False
+
+            fluorescent_dye = str(existing_meta.get("fluorescent_dye", g.get("fluorescent_dye", "")) or "")
+            dye_concentration_value = float(existing_meta.get("dye_concentration_value", g.get("dye_concentration_value", 0.0)) or 0.0)
+            objective_magnification = float(existing_meta.get("objective_magnification", g.get("objective_magnification", 0.0)) or 0.0)
+            laser_wavelength = float(existing_meta.get("laser_wavelength", g.get("laser_wavelength", 0.0)) or 0.0)
+            laser_intensity = float(existing_meta.get("laser_intensity", g.get("laser_intensity", 0.0)) or 0.0)
+            camera_binning = int(existing_meta.get("camera_binning", g.get("camera_binning", 0)) or 0)
+            pixel_size = float(existing_meta.get("pixel_size", g.get("pixel_size", 0.0)) or 0.0)
+
     if submitted:
+        capture_type = st.session_state.get(live_capture_key, existing_capture_type)
+
         exp_meta: Dict[str, Any] = {
             "experiment_group": selected_experiment_group,
             "date": _clean_str(date),
             "replicate": int(replicate) if replicate else None,
-
             "organism": _clean_str(organism),
             "protein": _clean_str(protein),
             "strain": _clean_str(strain),
-
             "capture_type": _clean_str(capture_type),
             "exposure_time": _none_if_zero_float(float(exposure_time)),
             "time_interval": _none_if_zero_float(float(time_interval)),
-
             "condition_name": _clean_str(condition_name),
             "concentration_value": None if is_na else _none_if_zero_float(float(concentration_value)),
             "concentration_unit": _clean_str(concentration_unit),
-
             "is_valid": bool(is_valid),
             "comment": _none_if_blank(comment),
-            "experiment_path": str(Path(root_str) / selected_experiment_group)  if root_str else "",
+            "experiment_path": str(Path(root_str) / selected_experiment_group) if root_str else "",
         }
 
         if enable_override:
-            def maybe_set_override(key: str, val: Any, global_val: Any):
-                if val in ("", None):
-                    return
-                if global_val in ("", None) and val not in ("", None):
-                    exp_meta[key] = val
-                    return
-                if isinstance(val, (int, float)) and isinstance(global_val, (int, float)):
-                    if float(val) != float(global_val):
-                        exp_meta[key] = val
-                    return
-                if str(val) != str(global_val):
-                    exp_meta[key] = val
+            if ov_fluorescent_dye:
+                exp_meta["fluorescent_dye"] = _clean_str(fluorescent_dye)
 
-            maybe_set_override("fluorescent_dye", _clean_str(fluorescent_dye), g.get("fluorescent_dye"))
-
-            if capture_type != "confocal":
-                maybe_set_override(
-                    "dye_concentration_value",
-                    _none_if_zero_float(float(dye_concentration_value)),
-                    g.get("dye_concentration_value"),
-                )
-            else:
+            if capture_type != "confocal" and ov_dye_concentration_value:
+                exp_meta["dye_concentration_value"] = _none_if_zero_float(float(dye_concentration_value))
+            elif capture_type == "confocal":
                 exp_meta["dye_concentration_value"] = None
 
-            maybe_set_override("objective_magnification", _none_if_zero_float(float(objective_magnification)), g.get("objective_magnification"))
-            maybe_set_override("laser_wavelength", _none_if_zero_float(float(laser_wavelength)), g.get("laser_wavelength"))
-            maybe_set_override("laser_intensity", _none_if_zero_float(float(laser_intensity)), g.get("laser_intensity"))
-            maybe_set_override("camera_binning", _none_if_zero_int(int(camera_binning)), g.get("camera_binning"))
-            maybe_set_override("pixel_size", _none_if_zero_float(float(pixel_size)), g.get("pixel_size"))
+            if ov_objective_magnification:
+                exp_meta["objective_magnification"] = _none_if_zero_float(float(objective_magnification))
+
+            if ov_laser_wavelength:
+                exp_meta["laser_wavelength"] = _none_if_zero_float(float(laser_wavelength))
+
+            if ov_laser_intensity:
+                exp_meta["laser_intensity"] = _none_if_zero_float(float(laser_intensity))
+
+            if ov_camera_binning:
+                exp_meta["camera_binning"] = _none_if_zero_int(int(camera_binning))
+
+            if ov_pixel_size:
+                exp_meta["pixel_size"] = _none_if_zero_float(float(pixel_size))
 
         st.session_state["meta_experiment_by_group"][selected_experiment_group] = exp_meta
+        save_intake_draft_to_session()
         st.success(f"Saved experiment metadata for group: {selected_experiment_group}")
 
 # ---- Per-type defaults (raw/mask/tracking) ----
@@ -866,55 +1082,93 @@ if scope == "Per-type defaults":
     if "defaults_by_type" not in st.session_state:
         st.session_state["defaults_by_type"] = {}
 
-    tabs = st.tabs(["raw", "mask", "tracking"])
+    tabs = st.tabs(["mask", "tracking"])
 
 
     with tabs[0]:
-        st.markdown("### Raw files defaults, to be developed")
-
-    with tabs[1]:
         st.markdown("### Mask defaults")
+        mask_defaults = st.session_state.get("defaults_by_type", {}).get("mask", {})
+        if mask_defaults:
+            st.caption("Saved mask defaults loaded into the form. You can edit and resave them.")
+
         with st.form("mask_defaults_form", clear_on_submit=False):
-            segmentation_method = st.text_input("segmentation_method(ex. Cellpose)", value="")
+            segmentation_method = st.text_input("segmentation_method(ex. Cellpose)", value=mask_defaults.get("segmentation_method", "") or "")
             mask_type_options = sorted(list(MASK_TYPES))
-            mask_type = st.selectbox("mask_type", mask_type_options, index=mask_type_options.index("nucleus") if "nucleus" in mask_type_options else 0)
+            existing_mask_type = mask_defaults.get("mask_type", "nucleus")
+            mask_type_index = (
+                mask_type_options.index(existing_mask_type)
+                if existing_mask_type in mask_type_options
+                else (mask_type_options.index("nucleus") if "nucleus" in mask_type_options else 0)
+            )
+            mask_type = st.selectbox("mask_type", mask_type_options, index=mask_type_index)
+
+            current_seg_params = mask_defaults.get("segmentation_parameters")
+            if current_seg_params:
+                st.caption("A segmentation parameters JSON is already saved for this session. Upload a new file only if you want to replace it.")
 
             st.markdown("**Optional: Upload segmentation parameters JSON file**")
-            uploaded = st.file_uploader("Segmentation parameters JSON", type=["json"])
+            uploaded = st.file_uploader("Segmentation parameters JSON", type=["json"], key="mask_defaults_json")
 
             submitted_mask = st.form_submit_button("Save mask defaults")
 
         if submitted_mask:
-            segmentation_params_json_obj = None
+            segmentation_params_json_obj = current_seg_params
             if uploaded is not None:
                 try:
                     segmentation_params_json_obj = json.loads(uploaded.read().decode("utf-8"))
                 except Exception as e:
                     st.error(f"Could not parse uploaded JSON: {e}")
                     st.stop()
-
             st.session_state["defaults_by_type"]["mask"] = {
                 "segmentation_method": _clean_str(segmentation_method),
                 "mask_type": _clean_str(mask_type),
-                "segmentation_parameters": segmentation_params_json_obj
+                "segmentation_parameters": segmentation_params_json_obj,
             }
+            save_intake_draft_to_session()
             st.success("Saved mask defaults.")
 
-    with tabs[2]:
+
+    with tabs[1]:
         st.markdown("### Tracking defaults")
+
+        tracking_defaults = st.session_state.get("defaults_by_type", {}).get("tracking", {})
+
+        if tracking_defaults:
+            st.caption("Saved tracking defaults loaded into the form. You can edit and resave them.")
+
         with st.form("tracking_defaults_form", clear_on_submit=False):
-            threshold = st.number_input("threshold", value=0.0, step=1.0)
-            linking_distance = st.number_input("linking_distance (pixels)", value=0.0, step=1.0)
-            gap_closing_distance = st.number_input("gap_closing_distance (pixels)", value=0.0, step=1.0)
-            max_frame_gap = st.number_input("max_frame_gap", value=-1, step=1)
+            threshold = st.number_input(
+                "threshold",
+                value=float(tracking_defaults.get("threshold", 0.0) or 0.0),
+                step=1.0
+            )
+            linking_distance = st.number_input(
+                "linking_distance (pixels)",
+                value=float(tracking_defaults.get("linking_distance", 0.0) or 0.0),
+                step=1.0
+            )
+            gap_closing_distance = st.number_input(
+                "gap_closing_distance (pixels)",
+                value=float(tracking_defaults.get("gap_closing_distance", 0.0) or 0.0),
+                step=1.0
+            )
+            max_frame_gap = st.number_input(
+                "max_frame_gap",
+                value=int(tracking_defaults.get("max_frame_gap", -1) if tracking_defaults.get("max_frame_gap", -1) is not None else -1),
+                step=1
+            )
+
+            current_trackmate_json = tracking_defaults.get("trackmate_settings_json")
+            if current_trackmate_json:
+                st.caption("A TrackMate settings JSON is already saved for this session. Upload a new file only if you want to replace it.")
 
             st.markdown("**Optional: Upload TrackMate settings JSON**")
-            uploaded = st.file_uploader("TrackMate JSON", type=["json"])
+            uploaded = st.file_uploader("TrackMate JSON", type=["json"], key="tracking_defaults_json")
 
             submitted_tracking = st.form_submit_button("Save tracking defaults")
 
         if submitted_tracking:
-            trackmate_json_obj = None
+            trackmate_json_obj = current_trackmate_json
             if uploaded is not None:
                 try:
                     trackmate_json_obj = json.loads(uploaded.read().decode("utf-8"))
@@ -929,6 +1183,7 @@ if scope == "Per-type defaults":
                 "max_frame_gap": None if max_frame_gap == -1 else int(max_frame_gap),
                 "trackmate_settings_json": trackmate_json_obj,
             }
+            save_intake_draft_to_session()
             st.success("Saved tracking defaults.")
 #st.divider()
 # ---------------------------------------------
