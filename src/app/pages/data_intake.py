@@ -167,6 +167,67 @@ def apply_ext_rule(df: pd.DataFrame, ext: str, role: str) -> pd.DataFrame:
     out.loc[out["ext"] == ext, "data_type"] = role
     return out
 
+def apply_folder_rule_recursive(df: pd.DataFrame, folder: str, role: str) -> pd.DataFrame:
+    """
+    Assign role to files in the selected folder and all its subfolders.
+    """
+    if role not in ROLE_OPTIONS:
+        return df
+
+    out = df.copy()
+
+    if folder == ".":
+        mask = out["relative_folder"] == "."
+    else:
+        mask = (
+            (out["relative_folder"] == folder)
+            | (out["relative_folder"].astype(str).str.startswith(folder + os.sep))
+            | (out["relative_folder"].astype(str).str.startswith(folder + "/"))
+        )
+
+    out.loc[mask, "data_type"] = role
+    return out
+
+
+def apply_path_contains_rule(df: pd.DataFrame, text: str, role: str) -> pd.DataFrame:
+    """
+    Assign role to files where relative_folder, file_name, or full_path contains text.
+    Case-insensitive.
+    """
+    if role not in ROLE_OPTIONS:
+        return df
+
+    text = str(text).strip().lower()
+    if not text:
+        return df
+
+    out = df.copy()
+
+    searchable = (
+        out["relative_folder"].fillna("").astype(str).str.lower()
+        + "/"
+        + out["file_name"].fillna("").astype(str).str.lower()
+        + "/"
+        + out["full_path"].fillna("").astype(str).str.lower()
+    )
+
+    mask = searchable.str.contains(re.escape(text), na=False)
+    out.loc[mask, "data_type"] = role
+    return out
+
+
+def apply_to_rows(df: pd.DataFrame, row_index: pd.Index, role: str) -> pd.DataFrame:
+    """
+    Assign role to a selected set of dataframe rows.
+    Useful for 'apply to currently filtered rows'.
+    """
+    if role not in ROLE_OPTIONS:
+        return df
+
+    out = df.copy()
+    out.loc[row_index, "data_type"] = role
+    return out
+
 
 def validate_manifest_df(df: pd.DataFrame) -> List[str]:
     issues: List[str] = []
@@ -542,40 +603,184 @@ if session_draft:
 # ----------------------------------------------
 # --- Step 2: Classification rules ---
 # ----------------------------------------------
+# st.header("2) Classify files in bulk")
+
+# colA, colB = st.columns(2)
+
+# with colA:
+#     st.subheader("Assign by folder")
+#     st.caption("Selecting **.** assigns the chosen data type to all files in the current directory. "
+#     "For files outside this directory, the app attempts to infer the data type "
+#     "using config-based type hints and filenames. If it cannot determine the type, "
+#     "the file remains unassigned for manual review.")
+
+#     folders = sorted(df["relative_folder"].unique().tolist())
+#     selected_folder = st.selectbox("Folder", folders)
+#     folder_role = st.selectbox("Set data type for the file in the selected folder", ROLE_OPTIONS, index=ROLE_OPTIONS.index("raw") if "raw" in ROLE_OPTIONS else 0)
+#     if st.button("Apply folder rule"):
+#         df = apply_folder_rule(df, selected_folder, folder_role)
+#         st.session_state["intake_df"] = df
+#         save_intake_draft_to_session()
+
+# with colB:
+#     st.subheader("Assign by extension")
+#     st.caption("Assigns the selected data type to all files with the chosen extension "
+#     "in the specified directory and its subdirectories. "
+#     "For other files, the app attempts to infer the data type using "
+#     "config-based type hints and filenames. If it cannot determine the type, "
+#     "the file remains unassigned for manual review.")
+
+#     exts = sorted(df["ext"].unique().tolist())
+#     selected_ext = st.selectbox("Extension", exts)
+#     ext_role = st.selectbox("Set data type for this extension", ROLE_OPTIONS, index=ROLE_OPTIONS.index("tracking") if "tracking" in ROLE_OPTIONS else 0)
+#     if st.button("Apply extension rule"):
+#         df = apply_ext_rule(df, selected_ext, ext_role)
+#         st.session_state["intake_df"] = df
+#         save_intake_draft_to_session()
+
+# st.divider()
+
+# ----------------------------------------------
+# --- Step 2: Classification rules ---
+# ----------------------------------------------
 st.header("2) Classify files in bulk")
 
-colA, colB = st.columns(2)
+st.caption(
+    "Use these bulk tools to quickly assign data types. "
+    "For nested folders, use recursive folder assignment. "
+    "For mixed file extensions, use path/name matching or filtered rows."
+)
 
-with colA:
+tab_folder, tab_pattern, tab_ext = st.tabs([
+    "Folder rules",
+    "Path / name contains",
+    "Extension rules",
+])
+
+# -----------------------------
+# Folder-based assignment
+# -----------------------------
+with tab_folder:
     st.subheader("Assign by folder")
-    st.caption("Selecting **.** assigns the chosen data type to all files in the current directory. "
-    "For files outside this directory, the app attempts to infer the data type "
-    "using config-based type hints and filenames. If it cannot determine the type, "
-    "the file remains unassigned for manual review.")
 
     folders = sorted(df["relative_folder"].unique().tolist())
-    selected_folder = st.selectbox("Folder", folders)
-    folder_role = st.selectbox("Set data type for the file in the selected folder", ROLE_OPTIONS, index=ROLE_OPTIONS.index("raw") if "raw" in ROLE_OPTIONS else 0)
-    if st.button("Apply folder rule"):
-        df = apply_folder_rule(df, selected_folder, folder_role)
-        st.session_state["intake_df"] = df
-        save_intake_draft_to_session()
+    selected_folder = st.selectbox(
+        "Folder",
+        folders,
+        key="bulk_selected_folder",
+    )
 
-with colB:
+    folder_role = st.selectbox(
+        "Set data type",
+        ROLE_OPTIONS,
+        index=ROLE_OPTIONS.index("raw") if "raw" in ROLE_OPTIONS else 0,
+        key="bulk_folder_role",
+    )
+
+    include_subfolders = st.checkbox(
+        "Include all subfolders",
+        value=True,
+        help="Recommended when a folder contains many nested subfolders, for example analysis outputs.",
+    )
+
+    col_exact, col_preview = st.columns([1, 2])
+
+    with col_exact:
+        if st.button("Apply folder rule", key="apply_folder_rule_btn"):
+            if include_subfolders:
+                df = apply_folder_rule_recursive(df, selected_folder, folder_role)
+            else:
+                df = apply_folder_rule(df, selected_folder, folder_role)
+
+            st.session_state["intake_df"] = df
+            save_intake_draft_to_session()
+            st.success(f"Applied '{folder_role}' to folder '{selected_folder}'.")
+
+    with col_preview:
+        if include_subfolders and selected_folder != ".":
+            preview_mask = (
+                (df["relative_folder"] == selected_folder)
+                | (df["relative_folder"].astype(str).str.startswith(selected_folder + "/"))
+                | (df["relative_folder"].astype(str).str.startswith(selected_folder + os.sep))
+            )
+        else:
+            preview_mask = df["relative_folder"] == selected_folder
+
+        st.write(f"Files affected: `{int(preview_mask.sum())}`")
+
+# -----------------------------
+# Path/name contains assignment
+# -----------------------------
+with tab_pattern:
+    st.subheader("Assign by path or filename text")
+
+    pattern_text = st.text_input(
+        "Text to match in folder, filename, or path",
+        placeholder="examples: mask, analysis, trackmate, segmented, raw",
+        key="bulk_pattern_text",
+    )
+
+    pattern_role = st.selectbox(
+        "Set matching files to data type",
+        ROLE_OPTIONS,
+        index=ROLE_OPTIONS.index("mask") if "mask" in ROLE_OPTIONS else 0,
+        key="bulk_pattern_role",
+    )
+
+    if pattern_text.strip():
+        searchable = (
+            df["relative_folder"].fillna("").astype(str).str.lower()
+            + "/"
+            + df["file_name"].fillna("").astype(str).str.lower()
+            + "/"
+            + df["full_path"].fillna("").astype(str).str.lower()
+        )
+        preview_mask = searchable.str.contains(re.escape(pattern_text.strip().lower()), na=False)
+        st.write(f"Files matched: `{int(preview_mask.sum())}`")
+
+        with st.expander("Preview matched files", expanded=False):
+            st.dataframe(
+                df.loc[preview_mask, ["experiment_group", "relative_folder", "file_name", "ext", "data_type"]],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    if st.button("Apply path/name rule", key="apply_pattern_rule_btn"):
+        if not pattern_text.strip():
+            st.warning("Enter text to match first.")
+        else:
+            df = apply_path_contains_rule(df, pattern_text, pattern_role)
+            st.session_state["intake_df"] = df
+            save_intake_draft_to_session()
+            st.success(f"Applied '{pattern_role}' to files matching '{pattern_text}'.")
+
+# -----------------------------
+# Extension-based assignment
+# -----------------------------
+with tab_ext:
     st.subheader("Assign by extension")
-    st.caption("Assigns the selected data type to all files with the chosen extension "
-    "in the specified directory and its subdirectories. "
-    "For other files, the app attempts to infer the data type using "
-    "config-based type hints and filenames. If it cannot determine the type, "
-    "the file remains unassigned for manual review.")
 
     exts = sorted(df["ext"].unique().tolist())
-    selected_ext = st.selectbox("Extension", exts)
-    ext_role = st.selectbox("Set data type for this extension", ROLE_OPTIONS, index=ROLE_OPTIONS.index("tracking") if "tracking" in ROLE_OPTIONS else 0)
-    if st.button("Apply extension rule"):
+    selected_ext = st.selectbox(
+        "Extension",
+        exts,
+        key="bulk_selected_ext",
+    )
+
+    ext_role = st.selectbox(
+        "Set data type for this extension",
+        ROLE_OPTIONS,
+        index=ROLE_OPTIONS.index("tracking") if "tracking" in ROLE_OPTIONS else 0,
+        key="bulk_ext_role",
+    )
+
+    st.write(f"Files affected: `{int((df['ext'] == selected_ext).sum())}`")
+
+    if st.button("Apply extension rule", key="apply_ext_rule_btn"):
         df = apply_ext_rule(df, selected_ext, ext_role)
         st.session_state["intake_df"] = df
         save_intake_draft_to_session()
+        st.success(f"Applied '{ext_role}' to extension '{selected_ext}'.")
 
 st.divider()
 
@@ -589,7 +794,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 # Filters
-fcol1, fcol2, fcol3 = st.columns([1.2, 1.2, 1.6])
+fcol1, fcol2, fcol3, fcol4 = st.columns([1.1, 1.1, 1.4, 1.6])
 
 with fcol1:
     show_only_unassigned = st.checkbox("Show only unassigned files", value=True)
@@ -602,6 +807,13 @@ with fcol2:
 with fcol3:
     advanced = st.checkbox("Advanced: per-file overrides", value=False)
 
+with fcol4:
+    path_filter_text = st.text_input(
+        "Filter by folder/file text",
+        placeholder="example: mask, analysis, trackmate",
+        key="path_filter_text",
+    )
+
 # Build view dataframe
 view_df = df.copy()
 
@@ -611,10 +823,47 @@ if show_only_unassigned:
 if filter_data_type != "All":
     view_df = view_df[view_df["data_type"] == filter_data_type]
 
+if path_filter_text.strip():
+    text = path_filter_text.strip().lower()
+    searchable_view = (
+        view_df["relative_folder"].fillna("").astype(str).str.lower()
+        + "/"
+        + view_df["file_name"].fillna("").astype(str).str.lower()
+        + "/"
+        + view_df["full_path"].fillna("").astype(str).str.lower()
+    )
+    view_df = view_df[searchable_view.str.contains(re.escape(text), na=False)]
+
 
 # number of rows found after filtering:
 st.markdown(f"Number of records found based on the filtering criteria: `{len(view_df.index)}`")
+# -----------------------------
+# Bulk action for currently filtered rows
+# -----------------------------
+with st.expander("Bulk action for currently filtered rows", expanded=False):
+    st.caption(
+        "This applies a data type to all rows currently visible after the filters above. "
+        "Useful when you filter by data type, folder, or manually narrow down the table."
+    )
 
+    visible_role = st.selectbox(
+        "Set visible rows to data type",
+        ROLE_OPTIONS,
+        index=ROLE_OPTIONS.index("ignore") if "ignore" in ROLE_OPTIONS else 0,
+        key="visible_rows_role",
+    )
+
+    st.write(f"Rows currently affected: `{len(view_df.index)}`")
+
+    if st.button("Apply to currently filtered rows", key="apply_visible_rows_btn"):
+        if view_df.empty:
+            st.warning("No rows are currently visible.")
+        else:
+            df = apply_to_rows(df, view_df.index, visible_role)
+            st.session_state["intake_df"] = df
+            save_intake_draft_to_session()
+            st.success(f"Applied '{visible_role}' to {len(view_df.index)} visible rows.")
+            st.rerun()
 
 # Base columns always visible/editable
 base_cols = ["experiment_group","relative_folder", "file_name", "ext", "data_type", "full_path"]
