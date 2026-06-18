@@ -1,0 +1,45 @@
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Packaging
+*.egg-info/
+dist/
+build/
+
+# Local data folders
+data/
+db/
+
+
+# SQLite database files
+*.db
+*.sqlite
+
+# Logs
+*.log
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Virtual environments
+.env
+.venv
+venv/
+ENV/
+*.conda
+*.virtualenv
+
+# Cache & build files
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Jupyter Notebook checkpoints (if you add notebooks later)
+.ipynb_checkpoints
+*.egg-info
