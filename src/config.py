@@ -10,7 +10,7 @@ from typing import Dict, FrozenSet, List
 import re
 
 
-SHAREPOINT_SYNC_ROOT = (Path.home() / "McGill University" / "Reyes Lab_Group - Microscopy Data").resolve()
+SHAREPOINT_SYNC_ROOT = Path("/Users/masoomeshafiee/Library/CloudStorage/OneDrive-SharedLibraries-McGillUniversity/Reyes Lab_Group - Documents/Microscopy Data")
 
 # ===============================
 # General app configuration

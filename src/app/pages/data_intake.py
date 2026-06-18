@@ -16,6 +16,12 @@ import streamlit as st
 
 from config import load_config, SUPPORTED_EXTS, FOLDER_HINTS, ROLE_OPTIONS, CAPTURE_TYPES, ALLOWED_ORGANISMS, MASK_TYPES, CONDITION_UNITS, SHAREPOINT_SYNC_ROOT
 from queries.insert_queries import insert_manifest 
+from queries.metadata_template_queries import (
+    fetch_reference_options,
+    fetch_experiment_metadata_profiles,
+    metadata_profile_to_state,
+    make_profile_label,
+)
 from services.data_validation import validate_manifest
 
 
@@ -509,6 +515,9 @@ def resolve_input_folder(folder_input: str, *, storage_root: Path) -> Path:
 # ----------------------------
 # Streamlit UI
 # ----------------------------
+cfg = load_config()
+db_path_input = cfg.get("db_path", "")
+
 st.set_page_config(page_title="Experiment Intake", layout="wide")
 st.title("Experiment Intake")
 st.markdown('<p style="font-size:16px;">Scan a folder and any subfolders, classify files (raw/mask/tracking/analysis), and export a clean manifest for DB insertion.</p>', unsafe_allow_html=True)
@@ -1018,7 +1027,91 @@ if scope == "Experiment-level metadata":
 
     existing_meta = meta_experiment_by_group.get(selected_experiment_group, {})
 
+    # -----------------------------
+    # Load metadata from previous DB experiments
+    # -----------------------------
+    with st.expander("Load metadata from previous experiment", expanded=False):
+        st.caption(
+            "This allows you to load metadata profiles from previous experiments in the database, which can save time if you have similar experiment groups. "
+        )
+
+        if not db_path_input:
+            st.warning("No database path configured.")
+        else:
+            try:
+                profiles_df = fetch_experiment_metadata_profiles(db_path_input, limit=400)
+            except Exception as e:
+                profiles_df = pd.DataFrame()
+                st.error(f"Could not load previous experiment metadata profiles: {e}")
+
+            if profiles_df.empty:
+                st.info("No previous experiment metadata profiles found. Check your database connection and make sure you have existing experiment metadata saved.")
+            else:
+                profile_records = profiles_df.to_dict(orient="records")
+                profile_labels = [make_profile_label(row) for row in profile_records]
+
+                selected_profile_label = st.selectbox(
+                    "Previous experiment metadata profile",
+                    options=profile_labels,
+                    key=f"metadata_profile_select_{selected_experiment_group}",
+                )
+
+                selected_idx = profile_labels.index(selected_profile_label)
+                selected_profile = profile_records[selected_idx]
+
+                with st.expander("Preview selected profile", expanded=False):
+                    st.dataframe(
+                        pd.DataFrame([selected_profile]),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                if st.button(
+                    "Load selected profile into this experiment group",
+                    key=f"load_metadata_profile_{selected_experiment_group}",
+                ):
+                    loaded = metadata_profile_to_state(selected_profile)
+
+                    # Update global defaults from previous profile
+                    current_global = st.session_state.get("defaults_global", {})
+                    current_global.update({
+                        k: v for k, v in loaded["defaults_global"].items()
+                        if v not in ("", None)
+                    })
+                    st.session_state["defaults_global"] = current_global
+
+                    # Update only this experiment group
+                    current_group_meta = st.session_state.get("meta_experiment_by_group", {}).get(
+                        selected_experiment_group,
+                        {},
+                    )
+
+                    loaded_exp_meta = loaded["experiment_meta"]
+                    loaded_exp_meta.update({
+                        "experiment_group": selected_experiment_group,
+                        "date": current_group_meta.get("date", datetime.now().date().isoformat()),
+                        "replicate": current_group_meta.get("replicate", 1),
+                        "comment": current_group_meta.get("comment"),
+                        "experiment_path": str(Path(root_str) / selected_experiment_group) if root_str else "",
+                    })
+
+                    st.session_state["meta_experiment_by_group"][selected_experiment_group] = loaded_exp_meta
+
+                    # Keep live capture-type widget synced
+                    live_capture_key = f"live_capture_type_{selected_experiment_group}"
+                    st.session_state[live_capture_key] = loaded_exp_meta.get("capture_type", "long")
+
+                    save_intake_draft_to_session()
+                    st.success("Loaded metadata profile into this experiment group.")
+                    st.rerun()
+
+    try:
+        reference_options = fetch_reference_options(db_path_input) if db_path_input else {}
+    except Exception as e:
+        reference_options = {}
+        st.warning(f"Could not load DB reference options: {e}")
     existing_capture_type = existing_meta.get("capture_type", "long")
+
     capture_type_options = sorted(list(CAPTURE_TYPES))
     default_capture_index = (
         capture_type_options.index(existing_capture_type)
@@ -1054,7 +1147,8 @@ if scope == "Experiment-level metadata":
             )
 
         with c2:
-            organism_options = sorted(list(ALLOWED_ORGANISMS))
+            organism_options = sorted(list(set(reference_options.get("organisms", [])) |set(ALLOWED_ORGANISMS)))
+            organism_options = ["<Enter new organism>"] + organism_options
             existing_organism = existing_meta.get("organism", "yeast")
             organism_index = (
                 organism_options.index(existing_organism)
