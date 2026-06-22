@@ -192,13 +192,21 @@ def delete_records_by_filter(db_path: str, table: str, filters: Optional[Dict[st
         base_tables={table}
     )
 
-    query = f"DELETE FROM {table}"
+    query = f"""
+    DELETE FROM {table}
+    WHERE id IN (
+    SELECT {table}.id
+    FROM {table}
+    """
+
     if joins:
         query += " " + " ".join(joins)
     if where_clauses:
         query += " WHERE " + " AND ".join(where_clauses)
     if limit:
         query += f" LIMIT {limit}"
+        
+    query += ")"
 
     print("Generated DELETE query:", query)  # --- IGNORE ---
     return execute_delete(db_path, query, params, dry_run)
